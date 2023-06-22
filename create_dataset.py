@@ -17,14 +17,20 @@ class CreateData:
         source_fn: str,
         target_path: str,
         train_pct: float = 0.9,
+        rank_order: bool = False,
         normalize_total: Optional[float] = 1e4,
         log_normalize: bool = True,
         min_genes_per_cell: int = 1000,
-        min_percent_cells_per_gene: float = 1.0,
+        min_percent_cells_per_gene: float = 2.0,
     ):
         self.source_fn = source_fn
         self.target_path = target_path
         self.train_pct = train_pct
+        self.rank_order = rank_order
+        if rank_order:
+            print("Since rank_oder=True, setting normalize_total=None and log_normalize=False")
+            normalize_total = None
+            log_normalize = False
         self.normalize_total = normalize_total
         self.log_normalize = log_normalize
         self.min_genes_per_cell = min_genes_per_cell
@@ -72,6 +78,18 @@ class CreateData:
         x = np.log1p(x) if self.log_normalize else x
         return x
 
+    def _rank_order(self, x: np.ndarray) -> np.ndarray:
+        """Will assign scores from 0 (lowest) to 1 (highest)."""
+        cell_rank = np.zeros_like(x)
+        for i in range(x.shape[0]):
+            unique_counts = np.unique(x[i, :])
+            rank_score = np.linspace(0.0, 1.0, len(unique_counts))
+            for n, count in enumerate(unique_counts):
+                idx = np.where(x[i, :] == count)[0]
+                cell_rank[i, idx] = rank_score[n]
+
+        return cell_rank
+
     def _create_metadata(self, train: bool = True):
 
         idx = self.train_idx if train else self.test_idx
@@ -89,6 +107,7 @@ class CreateData:
                 "std_nonzero": self.std,
                 "normalize_total": self.normalize_total,
                 "log_normalize": self.log_normalize,
+                "rank_order": self.rank_order,
             },
         }
         k = self.obs_keys[0]
@@ -114,7 +133,10 @@ class CreateData:
             y = self.anndata[current_idx].to_memory()
             y = y.X.toarray().astype(np.float32)
             y = y[:, idx_genes]
-            y = self._normalize(y)
+            if self.rank_order:
+                y = self._rank_order(y)
+            else:
+                y = self._normalize(y)
             fp[n * chunk_size: m, :] = y.astype(np.float16)
         fp.flush()
 
@@ -145,8 +167,8 @@ class CreateData:
 if __name__ == "__main__":
 
     source_path = "/home/masse/Downloads/RUSH_2023-06-08_21_44.h5ad"
-    target_path = "/home/masse/work/mssm/perceiver/data"
-    c = CreateData(source_path, target_path, train_pct=0.9)
+    target_path = "/home/masse/work/perceiver/data"
+    c = CreateData(source_path, target_path, train_pct=0.9, rank_order=True)
 
     c.create_datasets()
 

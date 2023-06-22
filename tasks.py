@@ -55,19 +55,12 @@ class MSELoss(pl.LightningModule):
 
         if self.class_dist is not None:
             for n, (k, v) in enumerate(self.class_dist.items()):
-                #class_predict = self.network.class_mlp[k](class_out[:, n])
-                #targets = torch.nn.functional.one_hot(class_targets[:, n], num_classes=v)
-                #if n > 0:
-                #    continue
                 cross_entropy = self.cross_ent[k].to(device=class_pred[k].device)
                 class_loss += cross_entropy(class_pred[k], class_targets[:, n])
-        """
-        for n, p in self.network.class_mlp["Sex"].named_parameters():
-            print(n, 10_000_000 * torch.var(p))
-        """
-        # alpha = torch.clip(0.01 * self.current_epoch - 0.05, 0, 0.1)
-        alpha = 0.1
-        loss = mse_loss + alpha * class_loss
+
+        alpha = 10.0
+        beta = 1.0
+        loss = alpha * mse_loss + beta * class_loss
 
 
         self.log("train_mse", mse_loss, on_step=False, on_epoch=True, prog_bar=True)
@@ -85,20 +78,11 @@ class MSELoss(pl.LightningModule):
         loss = self.mse(gene_pred, gene_targets.unsqueeze(2))
         ev = self.explained_var(gene_pred, gene_targets.unsqueeze(2))
 
-
-
         if self.class_dist is not None:
-            #class_targets = class_targets.to(device="cpu")
             acc = {}
 
             for n, k in enumerate(self.class_dist.keys()):
-                # print("XXX", class_pred[k].size(), class_targets.size())
-                #class_predict = self.network.class_mlp[k](class_out[:, n, :])
                 class_predict_idx = torch.argmax(class_pred[k], dim=-1)#.to(device="cpu")
-                # print("XXX", class_predict_idx, class_targets[:, n])
-                #print(class_predict_idx.size(), class_targets[:, n].size(), class_out.size())
-                #print(class_predict_idx, class_targets[:, n])
-                #print(class_predict)
                 metric = self.accuracy[k].to(device=class_pred[k].device)
                 acc[k] = metric(class_predict_idx, class_targets[:, n])
                 # print(class_targets[:, n])

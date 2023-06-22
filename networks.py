@@ -96,15 +96,22 @@ class Exceiver(nn.Module):
         dim_feedforward: int,
         class_dist: Optional[Dict[str, float]] = None,
         dropout: float = 0.0,  # for the process attention module
+        rank_order: bool = False,
         **kwargs,
     ):
 
         # Initialize superclass
         super().__init__()
 
+        self.seq_len = seq_len
+        self.seq_dim = seq_dim
+        # rank ordering will change how genes are embedded
+        self.rank_order = rank_order
+        # create the gene embeddings based on whether to use rank ordering
+        self._create_gene_embeddings()
+
         # Embeddings and attention blocks
         self.n_classes = len(class_dist) if class_dist is not None else 0
-        self.gene_emb = nn.Embedding(seq_len + 1, seq_dim, padding_idx=seq_len)
 
         # self.output_emb = nn.Embedding(seq_len + 1, seq_dim, padding_idx=seq_len)
         self.query_emb = nn.Parameter(torch.randn(query_len, query_dim))
@@ -131,25 +138,43 @@ class Exceiver(nn.Module):
                 }
             )
 
-        self.gene_val_w = nn.Parameter(torch.ones(1, seq_len - 1))
-        self.gene_val_b = nn.Parameter(torch.zeros(1, seq_len - 1))
-
     def encoder_attn_step(
         self,
-        gene_ids: torch.Tensor,
-        gene_vals: torch.Tensor,
+        key_vals: torch.Tensor,
         input_query: torch.Tensor,
         key_padding_mask: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
 
-        alpha = gene_vals * self.gene_val_w + self.gene_val_b
-        gene_emb = self.gene_emb(gene_ids)
-        key_val = alpha.unsqueeze(2) * gene_emb
-
         latent, encoder_weights = self.encoder_cross_attn(
-            input_query, key_val, key_padding_mask
+            input_query, key_vals, key_padding_mask
         )
         return latent, encoder_weights
+
+    def _create_gene_embeddings(self):
+
+        if self.rank_order:
+            self.gene_emb_low = nn.Embedding(self.seq_len + 1, self.seq_dim, padding_idx=self.seq_len)
+            self.gene_emb_high = nn.Embedding(self.seq_len + 1, self.seq_dim, padding_idx=self.seq_len)
+        else:
+            self.gene_emb = nn.Embedding(self.seq_len + 1, self.seq_dim, padding_idx=self.seq_len)
+            self.gene_val_w = nn.Parameter(torch.ones(1, self.seq_len - 1))
+            self.gene_val_b = nn.Parameter(torch.zeros(1, self.seq_len - 1))
+
+    def _gene_embedding(self, gene_ids: torch.Tensor, gene_vals: Optional[torch.Tensor] = None) -> torch.Tensor:
+
+        if self.rank_order:
+            if gene_vals is not None:
+                return (1 - gene_vals) * self.gene_emb_low(gene_ids) + gene_vals * self.gene_emb_high(gene_ids)
+            else:
+                return self.gene_emb_high(gene_ids)
+        else:
+            if gene_vals is not None:
+                alpha = gene_vals * self.gene_val_w + self.gene_val_b
+                gene_emb = self.gene_emb(gene_ids)
+                return alpha.unsqueeze(2) * gene_emb
+            else:
+                return self.gene_emb(gene_ids)
+
 
     def forward(
         self,
@@ -161,12 +186,15 @@ class Exceiver(nn.Module):
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
 
         input_query = self.query_emb.repeat(len(gene_ids), 1, 1)
-        gene_target_query = self.gene_emb(gene_target_ids)
+
         class_target_query = self.class_emb(class_target_ids)
+
+        key_vals = self._gene_embedding(gene_ids, gene_vals)
+        gene_target_query = self._gene_embedding(gene_target_ids)
 
         # Main calculation of latent variables
         latent, encoder_weights = self.encoder_attn_step(
-            gene_ids, gene_vals, input_query, key_padding_mask
+            key_vals, input_query, key_padding_mask
         )
         latent = self.process_self_attn(latent)
 
