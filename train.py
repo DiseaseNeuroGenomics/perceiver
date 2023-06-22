@@ -25,7 +25,7 @@ def main():
     dm.setup(None)
 
     # Create network
-    model_cfg["seq_len"] = dm.train_dataset.n_genes + 1
+    model_cfg["seq_len"] = dm.train_dataset.n_genes
     model_cfg["class_dist"] = dm.train_dataset.class_dist
 
     model = Exceiver(**model_cfg)
