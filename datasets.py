@@ -23,6 +23,7 @@ class SingleCellDataset(Dataset):
         n_mask: int = 316,
         batch_size: int = 32,
         rank_order: bool = False,
+        scale_by_max: bool = True,
         pin_memory: bool = False,
     ):
 
@@ -36,6 +37,7 @@ class SingleCellDataset(Dataset):
         self.n_mask = n_mask
         self.batch_size = batch_size
         self.rank_order = rank_order
+        self.scale_by_max = scale_by_max
         self.pin_memory = pin_memory
 
         self.offset = 2 * self.n_genes  # FP16 is 2 bytes
@@ -75,13 +77,7 @@ class SingleCellDataset(Dataset):
         """Extract the class value for ach entry in the batch"""
         if self.class_unique is None:
             return None
-        """
-        class_vals = np.stack(
-            [
-                np.array([np.where(self.metadata["obs"][k][i] == v)[0] for k, v in self.class_unique.items()])
-            ] for i in idx
-        )
-        """
+
         class_vals = np.zeros((self.batch_size, self.n_classes), dtype=np.int64)
         for n0, i in enumerate(idx):
             for n1, (k, v) in enumerate(self.class_unique.items()):
@@ -96,14 +92,9 @@ class SingleCellDataset(Dataset):
             gene_vals[n, :] = np.memmap(
                 self.data_path, dtype='float16', mode='r', shape=(self.n_genes,), offset=i * self.offset
             ).astype(np.float32)
-        """
-        x = np.stack(
-            [
-                np.memmap(self.data_path, dtype='float16', mode='r', shape=(self.n_genes,), offset=i * self.offset)
-                for i in idx
-            ]
-        )
-        """
+            if self.scale_by_max:
+                gene_vals[n, :] /= (1e-9 + self.metadata["stats"]["max"])
+
         zero_idx = np.where(gene_vals == 0)
         gene_vals = torch.from_numpy(gene_vals)
         # return two copies since we'll modify gene_vals but keep gene_targets as is
@@ -116,6 +107,7 @@ class SingleCellDataset(Dataset):
 
         key_padding_mask = torch.zeros_like(gene_vals).detach()
         key_padding_mask[zero_idx[0], zero_idx[1]] = 1.0
+
         return gene_vals, key_padding_mask, gene_targets, class_vals
 
     def __len__(self):
@@ -150,10 +142,17 @@ class SingleCellDataset(Dataset):
         # target ids are the genes that are masked out plus the classes to predict
         gene_target_ids = gene_ids[mask_row_ids, mask_col_ids].reshape(self.batch_size, -1)
 
-        if not self.rank_order:
-            # mask out gene values and assing their index to the padding_index
-            gene_ids[mask_row_ids, mask_col_ids] = self.n_genes
-            gene_vals[mask_row_ids, mask_col_ids] = 0.0
+        #if not self.rank_order:
+        # for targets, mask out gene values and assign their index to the padding_index
+        gene_ids[mask_row_ids, mask_col_ids] = self.n_genes
+        gene_vals[mask_row_ids, mask_col_ids] = 0.0
+
+        # mask out all genes with expression of zero
+        for i in range(self.batch_size):
+            zero_idx = torch.where(key_padding_mask[i, :] == 1)[0]
+            gene_ids[i, zero_idx] = self.n_genes
+            gene_vals[i, zero_idx] = 0.0 #  should already be zero...just to be safe
+
 
         batch = gene_ids, gene_target_ids, class_ids, gene_vals, gene_targets, key_padding_mask, class_targets
 
