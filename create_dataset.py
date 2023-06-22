@@ -58,7 +58,9 @@ class CreateData:
         n_cells, n_features = fp.shape
 
         count = 0
-        sum_all = sumsq = np.zeros(n_features, dtype=np.float32)
+        sum_all = np.zeros(n_features, dtype=np.float32)
+        sumsq = np.zeros(n_features, dtype=np.float32)
+        self.max_vals = np.zeros(n_features, dtype=np.float32)
         count_nonzero = np.ones(n_features, dtype=np.float32)  # add one to stabilize stats
         for i in range(n_cells):
             y = np.array(fp[i, :]).astype(np.float32)
@@ -67,6 +69,8 @@ class CreateData:
             sumsq += y**2
             idx = np.where(y > 0)[0]
             count_nonzero[idx] += 1
+            idx_max = np.where(y > self.max_vals)[0]
+            self.max_vals[idx_max] = y[idx_max]
 
         self.mean = sum_all / count
         self.mean_nonzero = sum_all / count_nonzero
@@ -103,6 +107,7 @@ class CreateData:
             "stats": {
                 "mean": self.mean,
                 "std": self.std,
+                "max": self.max_vals,
                 "mean_nonzero": self.mean,
                 "std_nonzero": self.std,
                 "normalize_total": self.normalize_total,
@@ -138,6 +143,8 @@ class CreateData:
             else:
                 y = self._normalize(y)
             fp[n * chunk_size: m, :] = y.astype(np.float16)
+
+        # flush to memory
         fp.flush()
 
         return fp
@@ -167,7 +174,7 @@ class CreateData:
 if __name__ == "__main__":
 
     source_path = "/home/masse/Downloads/RUSH_2023-06-08_21_44.h5ad"
-    target_path = "/home/masse/work/perceiver/data"
+    target_path = "/home/masse/work/perceiver/data_scaled"
     c = CreateData(source_path, target_path, train_pct=0.9, rank_order=True)
 
     c.create_datasets()

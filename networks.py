@@ -152,6 +152,7 @@ class Exceiver(nn.Module):
 
     def _create_gene_embeddings(self):
 
+        print(f"rank_order = {self.rank_order}")
         if self.rank_order:
             self.gene_emb_low = nn.Embedding(self.seq_len + 1, self.seq_dim, padding_idx=self.seq_len)
             self.gene_emb_high = nn.Embedding(self.seq_len + 1, self.seq_dim, padding_idx=self.seq_len)
@@ -164,7 +165,7 @@ class Exceiver(nn.Module):
 
         if self.rank_order:
             if gene_vals is not None:
-                return (1 - gene_vals) * self.gene_emb_low(gene_ids) + gene_vals * self.gene_emb_high(gene_ids)
+                return (1 - gene_vals[..., None]) * self.gene_emb_low(gene_ids) + gene_vals[..., None] * self.gene_emb_high(gene_ids)
             else:
                 return self.gene_emb_high(gene_ids)
         else:

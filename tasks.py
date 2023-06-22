@@ -58,10 +58,10 @@ class MSELoss(pl.LightningModule):
                 cross_entropy = self.cross_ent[k].to(device=class_pred[k].device)
                 class_loss += cross_entropy(class_pred[k], class_targets[:, n])
 
+        # TODO: fit this
         alpha = 10.0
         beta = 1.0
         loss = alpha * mse_loss + beta * class_loss
-
 
         self.log("train_mse", mse_loss, on_step=False, on_epoch=True, prog_bar=True)
         self.log("train_class", class_loss, on_step=False, on_epoch=True, prog_bar=True)
