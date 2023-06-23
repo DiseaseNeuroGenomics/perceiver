@@ -57,6 +57,8 @@ class SingleCellDataset(Dataset):
         else:
             class_ids = None
 
+        #### TESTING !!
+        class_ids = torch.ones_like(class_ids)
         return gene_ids, class_ids
 
     def _get_class_info(self):
