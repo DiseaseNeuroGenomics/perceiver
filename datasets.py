@@ -68,8 +68,6 @@ class SingleCellDataset(Dataset):
             self.class_dist = {}
             for k in self.predict_classes.keys():
                 unique_list, counts = np.unique(self.metadata["obs"][k], return_counts=True)
-                print("unique_list", unique_list)
-                print("unique_count", counts)
                 self.class_unique[k] = np.array(unique_list)
                 self.class_dist[k] = counts / np.max(counts)
         else:

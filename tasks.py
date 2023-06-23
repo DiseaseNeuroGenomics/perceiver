@@ -1,11 +1,9 @@
 import torch
 from torch import nn
-import copy
 import numpy as np
 import pytorch_lightning as pl
 from torchmetrics import MetricCollection, ExplainedVariance
 from torchmetrics.classification import MulticlassAccuracy
-from datasets import DataModule
 
 
 class MSELoss(pl.LightningModule):
@@ -28,10 +26,7 @@ class MSELoss(pl.LightningModule):
             self.cross_ent = {}
             self.accuracy = {}
             for k, v in self.class_dist.items():
-                print(f"Class weights {1/v}")
                 self.cross_ent[k] = nn.CrossEntropyLoss(weight=torch.from_numpy(np.float32(1 / v)))
-                #self.cross_ent[k] = nn.CrossEntropyLoss(weight=torch.from_numpy(np.ones_like(v)))
-                #self.cross_ent[k] = nn.CrossEntropyLoss()
                 self.accuracy[k] = MulticlassAccuracy(num_classes=len(v), average="macro")
         else:
             self.cross_ent = self.accuracy = None
