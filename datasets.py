@@ -3,7 +3,7 @@ from typing import Dict, List, Optional
 import os
 import torch
 import numpy as np
-import cloudpickle as pickle
+import pickle
 import pytorch_lightning as pl
 from torch.utils.data import (
     Dataset,

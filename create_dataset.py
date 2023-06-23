@@ -1,7 +1,7 @@
 from typing import List, Optional
 
 import os
-import cloudpickle as pickle
+import pickle
 import numpy as np
 import scanpy as sc
 
