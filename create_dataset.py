@@ -42,14 +42,17 @@ class CreateData:
 
         self.anndata = sc.read_h5ad(source_fn, 'r')
 
-        self._filter_cells()
+        # self._filter_cells()
         self._filter_genes()
 
         print(f"Size of anndata {self.anndata.shape[0]}")
 
     def _train_test_splits(self):
         # TODO: might want to make split by subjects
-        idx = np.arange(self.anndata.shape[0])
+        # idx = np.arange(self.anndata.shape[0])
+        n_genes = self.anndata.obs["n_genes"].values
+        idx = np.where(n_genes > self.min_genes_per_cell)[0]
+
         np.random.shuffle(idx)
         self.train_idx = idx[: int(len(idx) * self.train_pct)]
         self.test_idx = idx[int(len(idx) * self.train_pct):]
@@ -101,7 +104,6 @@ class CreateData:
     def _create_metadata(self, train: bool = True):
 
         idx = self.train_idx if train else self.test_idx
-        idx_genes = self._filter_genes()
         meatadata_fn = "train_metadata.pkl" if train else "test_metadata.pkl"
         meatadata_fn = os.path.join(self.target_path, meatadata_fn)
 
