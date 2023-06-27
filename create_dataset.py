@@ -52,7 +52,7 @@ class CreateData:
 
         np.random.shuffle(self.cell_idx)
         n = len(self.cell_idx)
-        self.train_idx = self.cell_idx[: (n * self.train_pct)]
+        self.train_idx = self.cell_idx[: int(n * self.train_pct)]
         self.test_idx = self.cell_idx[int(n * self.train_pct):]
         self.train_idx = np.sort(self.train_idx)
         self.test_idx = np.sort(self.test_idx)
