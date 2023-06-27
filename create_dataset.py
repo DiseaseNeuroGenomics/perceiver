@@ -21,7 +21,7 @@ class CreateData:
         normalize_total: Optional[float] = 1e4,
         log_normalize: bool = True,
         min_genes_per_cell: int = 1000,
-        min_percent_cells_per_gene: float = 2.0,
+        min_percent_cells_per_gene: float = 0.02,
     ):
         self.source_fn = source_fn
         self.target_path = target_path
@@ -42,16 +42,17 @@ class CreateData:
 
         self.anndata = sc.read_h5ad(source_fn, 'r')
 
+        self._filter_cells()
+        self._filter_genes()
+
         print(f"Size of anndata {self.anndata.shape[0]}")
 
     def _train_test_splits(self):
         # TODO: might want to make split by subjects
-        n_genes = self.anndata.obs["n_genes"].values
-        good_cells = np.where(n_genes > self.min_genes_per_cell)[0]
-        np.random.shuffle(good_cells)
-        print(f"Original size: {self.anndata.shape[0]}, filtered size: {len(good_cells)}")
-        self.train_idx = good_cells[: int(len(good_cells) * self.train_pct)]
-        self.test_idx = good_cells[int(len(good_cells) * self.train_pct):]
+        idx = np.arange(self.anndata.shape[0])
+        np.random.shuffle(idx)
+        self.train_idx = idx[: int(len(idx) * self.train_pct)]
+        self.test_idx = idx[int(len(idx) * self.train_pct):]
 
         self.train_idx = np.sort(self.train_idx)
         self.test_idx = np.sort(self.test_idx)
@@ -123,35 +124,30 @@ class CreateData:
         pickle.dump(meta, open(meatadata_fn, "wb"))
 
     def _filter_genes(self):
-        p = self.anndata.var["percent_cells"].values
-        return np.where(p >= self.min_percent_cells_per_gene)[0]
+
+        temp_adata = self.anndata[:250_000].to_memory()
+        temp_adata = temp_adata.X.toarray().astype(np.float32)
+        gene_expression = np.mean(temp_adata, axis=0)
+        idx = np.where(gene_expression > self.min_percent_cells_per_gene)[0]
+        self.anndata = self.anndata[:, idx]
+
+    def _filter_cells(self):
+
+        n_genes = self.anndata.obs["n_genes"].values
+        idx = np.where(n_genes > self.min_genes_per_cell)[0]
+        self.anndata = self.anndata[idx]
 
     def _create_dataset(self, train: bool = True):
 
-        n_cells = self.anndata.shape[0]
-        idx = set(self.train_idx) if train else set(self.test_idx)
+        idx = self.train_idx if train else self.test_idx
         data_fn = "train_data.dat" if train else "test_data.dat"
         data_fn = os.path.join(self.target_path, data_fn)
-        # idx_genes = self._filter_genes()
+        self._filter_genes()
         idx_genes = np.arange(self.anndata.shape[1])
 
         chunk_size = 100_000  # chunk size for loading data into memory
         fp = np.memmap(data_fn, dtype='float16', mode='w+', shape=(len(idx), len(idx_genes)))
 
-        for n in range(n_cells // chunk_size + 1):
-            m = np.minimum(n_cells, (n + 1) * chunk_size)
-            print(f"Create dataset, cell number = {n * chunk_size}")
-            y = self.anndata[n * chunk_size : (n + 1) * chunk_size].to_memory()
-            y = y.X.toarray().astype(np.float32)
-            y = y[:, idx_genes]
-            if self.rank_order:
-                y = self._rank_order(y)
-            else:
-                y = self._normalize(y)
-            current_chunk = set(list(range(n * chunk_size, (n + 1) * chunk_size)))
-            current_idx = list(set(idx).intersection(current_chunk))
-            fp[current_idx] = y.astype(np.float16)
-        """
         for n in range(len(idx) // chunk_size + 1):
             m = np.minimum(len(idx), (n + 1) * chunk_size)
             current_idx = idx[n * chunk_size: m]
@@ -164,7 +160,6 @@ class CreateData:
             else:
                 y = self._normalize(y)
             fp[n * chunk_size: m, :] = y.astype(np.float16)
-        """
 
         # flush to memory
         fp.flush()
