@@ -142,11 +142,10 @@ class CreateData:
         idx = self.train_idx if train else self.test_idx
         data_fn = "train_data.dat" if train else "test_data.dat"
         data_fn = os.path.join(self.target_path, data_fn)
-        self._filter_genes()
-        idx_genes = np.arange(self.anndata.shape[1])
+        n_genes = self.anndata.shape[1]
 
         chunk_size = 100_000  # chunk size for loading data into memory
-        fp = np.memmap(data_fn, dtype='float16', mode='w+', shape=(len(idx), len(idx_genes)))
+        fp = np.memmap(data_fn, dtype='float16', mode='w+', shape=(len(idx), n_genes))
 
         for n in range(len(idx) // chunk_size + 1):
             m = np.minimum(len(idx), (n + 1) * chunk_size)
@@ -154,7 +153,6 @@ class CreateData:
             print(f"Create dataset, cell number = {current_idx[0]}")
             y = self.anndata[current_idx].to_memory()
             y = y.X.toarray().astype(np.float32)
-            y = y[:, idx_genes]
             if self.rank_order:
                 y = self._rank_order(y)
             else:
