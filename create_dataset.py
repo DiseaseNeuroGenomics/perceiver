@@ -42,21 +42,18 @@ class CreateData:
 
         self.anndata = sc.read_h5ad(source_fn, 'r')
 
-        # self._filter_cells()
-        self._filter_genes()
+        self._get_cell_index()
+        self._get_gene_index()
 
         print(f"Size of anndata {self.anndata.shape[0]}")
 
     def _train_test_splits(self):
         # TODO: might want to make split by subjects
-        # idx = np.arange(self.anndata.shape[0])
-        n_genes = self.anndata.obs["n_genes"].values
-        idx = np.where(n_genes > self.min_genes_per_cell)[0]
 
-        np.random.shuffle(idx)
-        self.train_idx = idx[: int(len(idx) * self.train_pct)]
-        self.test_idx = idx[int(len(idx) * self.train_pct):]
-
+        np.random.shuffle(self.cell_idx)
+        n = len(self.cell_idx)
+        self.train_idx = self.cell_idx[: (n * self.train_pct)]
+        self.test_idx = self.cell_idx[int(n * self.train_pct):]
         self.train_idx = np.sort(self.train_idx)
         self.test_idx = np.sort(self.test_idx)
 
@@ -110,7 +107,7 @@ class CreateData:
         meta = {
             "obs": {k: self.anndata.obs[k][idx].values for k in self.obs_keys},
             # "var": {k: self.anndata.var[k][idx_genes].values for k in self.var_keys},
-            "var": self.anndata.var,
+            "var": self.anndata.var[self.gene_idx],
             "stats": {
                 "mean": self.mean,
                 "std": self.std,
@@ -125,19 +122,17 @@ class CreateData:
         k = self.obs_keys[0]
         pickle.dump(meta, open(meatadata_fn, "wb"))
 
-    def _filter_genes(self):
+    def _get_gene_index(self):
 
-        temp_adata = self.anndata[:250_000].to_memory()
+        temp_adata = self.anndata[:200_000].to_memory()
         temp_adata = temp_adata.X.toarray().astype(np.float32)
         gene_expression = np.mean(temp_adata, axis=0)
-        idx = np.where(gene_expression > self.min_percent_cells_per_gene)[0]
-        self.anndata = self.anndata[:, idx]
+        self.gene_idx = np.where(gene_expression > self.min_percent_cells_per_gene)[0]
 
-    def _filter_cells(self):
+    def _get_cell_index(self):
 
         n_genes = self.anndata.obs["n_genes"].values
-        idx = np.where(n_genes > self.min_genes_per_cell)[0]
-        self.anndata = self.anndata[idx]
+        self.cell_idx = np.where(n_genes > self.min_genes_per_cell)[0]
 
     def _create_dataset(self, train: bool = True):
 
@@ -155,6 +150,7 @@ class CreateData:
             print(f"Create dataset, cell number = {current_idx[0]}")
             y = self.anndata[current_idx].to_memory()
             y = y.X.toarray().astype(np.float32)
+            y = y[:, self.gene_idx]
             if self.rank_order:
                 y = self._rank_order(y)
             else:
