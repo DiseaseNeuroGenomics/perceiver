@@ -128,15 +128,30 @@ class CreateData:
 
     def _create_dataset(self, train: bool = True):
 
-        idx = self.train_idx if train else self.test_idx
+        n_cells = self.anndata.shape[0]
+        idx = set(self.train_idx) if train else set(self.test_idx)
         data_fn = "train_data.dat" if train else "test_data.dat"
         data_fn = os.path.join(self.target_path, data_fn)
         # idx_genes = self._filter_genes()
         idx_genes = np.arange(self.anndata.shape[1])
 
-        chunk_size = 25_000  # chunk size for loading data into memory
+        chunk_size = 100_000  # chunk size for loading data into memory
         fp = np.memmap(data_fn, dtype='float16', mode='w+', shape=(len(idx), len(idx_genes)))
 
+        for n in range(n_cells // chunk_size + 1):
+            m = np.minimum(n_cells, (n + 1) * chunk_size)
+            print(f"Create dataset, cell number = {n * chunk_size}")
+            y = self.anndata[n * chunk_size : (n + 1) * chunk_size].to_memory()
+            y = y.X.toarray().astype(np.float32)
+            y = y[:, idx_genes]
+            if self.rank_order:
+                y = self._rank_order(y)
+            else:
+                y = self._normalize(y)
+            current_chunk = set(list(range(n * chunk_size, (n + 1) * chunk_size)))
+            current_idx = list(set(idx).intersection(current_chunk))
+            fp[current_idx] = y.astype(np.float16)
+        """
         for n in range(len(idx) // chunk_size + 1):
             m = np.minimum(len(idx), (n + 1) * chunk_size)
             current_idx = idx[n * chunk_size: m]
@@ -149,6 +164,7 @@ class CreateData:
             else:
                 y = self._normalize(y)
             fp[n * chunk_size: m, :] = y.astype(np.float16)
+        """
 
         # flush to memory
         fp.flush()
