@@ -38,7 +38,7 @@ class CreateData:
 
         self.obs_keys = ['CERAD', 'BRAAK_AD', 'Dementia', 'AD', 'class', 'subclass', 'subtype', 'ApoE_gt', 'Sex',
                         'Head_Injury', 'Vascular', 'Age', 'Epilepsy', 'Seizures', 'Tumor']
-        self.var_keys = ['gene_id', 'gene_name', 'gene_type']
+        # self.var_keys = ['gene_id', 'gene_name', 'gene_type']
 
         self.anndata = sc.read_h5ad(source_fn, 'r+')
 
@@ -52,6 +52,9 @@ class CreateData:
         print(f"Original size: {self.anndata.shape[0]}, filtered size: {len(good_cells)}")
         self.train_idx = good_cells[: int(len(good_cells) * self.train_pct)]
         self.test_idx = good_cells[int(len(good_cells) * self.train_pct):]
+
+        self.train_idx = np.sort(self.train_idx)
+        self.test_idx = np.sort(self.test_idx)
 
     def _calculate_stats(self, fp):
 
@@ -103,7 +106,8 @@ class CreateData:
 
         meta = {
             "obs": {k: self.anndata.obs[k][idx].values for k in self.obs_keys},
-            "var": {k: self.anndata.var[k][idx_genes].values for k in self.var_keys},
+            # "var": {k: self.anndata.var[k][idx_genes].values for k in self.var_keys},
+            "var": self.anndata.var,
             "stats": {
                 "mean": self.mean,
                 "std": self.std,
@@ -127,9 +131,10 @@ class CreateData:
         idx = self.train_idx if train else self.test_idx
         data_fn = "train_data.dat" if train else "test_data.dat"
         data_fn = os.path.join(self.target_path, data_fn)
-        idx_genes = self._filter_genes()
+        # idx_genes = self._filter_genes()
+        idx_genes = np.arange(self.anndata.shape[1])
 
-        chunk_size = 10_000  # chunk size for loading data into memory
+        chunk_size = 25_000  # chunk size for loading data into memory
         fp = np.memmap(data_fn, dtype='float16', mode='w+', shape=(len(idx), len(idx_genes)))
 
         for n in range(len(idx) // chunk_size + 1):
@@ -173,9 +178,9 @@ class CreateData:
 
 if __name__ == "__main__":
 
-    source_path = "/home/masse/Downloads/RUSH_2023-06-08_21_44.h5ad"
-    target_path = "/home/masse/work/perceiver/data_scaled"
-    c = CreateData(source_path, target_path, train_pct=0.9, rank_order=True)
+    source_path = "/sc/arion/projects/psychAD/NPS-AD/freeze2_rc/h5ad_final/FULL_2023-06-08_23_53_original.h5ad"
+    target_path = "/sc/arion/projects/psychAD/massen06/perceiver_data"
+    c = CreateData(source_path, target_path, train_pct=0.95, rank_order=True)
 
     c.create_datasets()
 
