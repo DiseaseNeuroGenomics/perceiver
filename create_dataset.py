@@ -40,7 +40,7 @@ class CreateData:
                         'Head_Injury', 'Vascular', 'Age', 'Epilepsy', 'Seizures', 'Tumor']
         # self.var_keys = ['gene_id', 'gene_name', 'gene_type']
 
-        self.anndata = sc.read_h5ad(source_fn, 'r+')
+        self.anndata = sc.read_h5ad(source_fn, 'r')
 
         print(f"Size of anndata {self.anndata.shape[0]}")
 
