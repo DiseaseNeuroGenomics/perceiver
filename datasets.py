@@ -1,8 +1,9 @@
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import os
 import torch
 import numpy as np
+import scanpy as sc
 import pickle
 import pytorch_lightning as pl
 from torch.utils.data import (
@@ -22,8 +23,8 @@ class SingleCellDataset(Dataset):
         predict_classes: Optional[Dict[str, int]] = None,
         n_mask: int = 316,
         batch_size: int = 32,
-        rank_order: bool = False,
-        scale_by_max: bool = True,
+        rank_order: bool = True,
+        scale_by_max: bool = False,
         pin_memory: bool = False,
     ):
 
@@ -58,7 +59,7 @@ class SingleCellDataset(Dataset):
             class_ids = None
 
         #### TESTING !!
-        class_ids = torch.ones_like(class_ids)
+        # class_ids = torch.ones_like(class_ids)
         return gene_ids, class_ids
 
     def _get_class_info(self):
@@ -163,6 +164,106 @@ class SingleCellDataset(Dataset):
         return batch
 
 
+class AnnDataset(SingleCellDataset):
+    def __init__(
+        self,
+        anndata: Any,
+        cell_idx: List[int],
+        gene_idx: List[int],
+        cells_per_epochs: int,
+        predict_classes: Optional[Dict[str, int]] = None,
+        n_mask: int = 316,
+        batch_size: int = 32,
+        rank_order: bool = True,
+        normalize_total: Optional[float] = 1e4,
+        log_normalize: bool = True,
+        pin_memory: bool = False,
+    ):
+
+        self.anndata = anndata
+        self.cell_idx = cell_idx
+        self.gene_idx = gene_idx
+        self.cells_per_epochs = cells_per_epochs
+        self.predict_classes = predict_classes
+
+        self.n_classes = len(predict_classes) if predict_classes is not None else 0
+        self.n_mask = n_mask
+        self.batch_size = batch_size
+        self.rank_order = rank_order
+        if rank_order:
+            print("Since rank_oder=True, setting normalize_total=None and log_normalize=False")
+            normalize_total = None
+            log_normalize = False
+        self.normalize_total = normalize_total
+        self.log_normalize = log_normalize
+
+        self.pin_memory = pin_memory
+
+        self.n_samples = self.anndata.shape[0]
+        self.n_genes = len(gene_idx)
+
+        self._get_class_info()
+        self._create_gene_class_ids()
+
+    def _get_class_info(self):
+        """Extract the list of uniques values for each class (e.g. sex, cell type, etc.) to be predicted"""
+        if self.predict_classes is not None:
+            self.class_unique = {}
+            self.class_dist = {}
+            for k in self.predict_classes.keys():
+                unique_list, counts = np.unique(self.anndata.obs[k], return_counts=True)
+                self.class_unique[k] = np.array(unique_list)
+                self.class_dist[k] = counts / np.max(counts)
+        else:
+            self.class_unique = self.class_dist = None
+
+    def _get_class_vals(self, idx: List[int]):
+        """Extract the class value for ach entry in the batch"""
+        if self.class_unique is None:
+            return None
+
+        class_vals = np.zeros((self.batch_size, self.n_classes), dtype=np.int64)
+        for n0, i in enumerate(idx):
+            for n1, (k, v) in enumerate(self.class_unique.items()):
+                class_vals[n0, n1] = np.where(self.anndata.obs[k][i] == v)[0]
+
+        return torch.from_numpy(class_vals)
+
+    def _get_gene_vals(self, idx: List[int]):
+
+        gene_vals = np.zeros((self.batch_size, self.n_genes), dtype=np.float32)
+        for n, i in enumerate(idx):
+            x = self.anndata[i].X.toarray()
+            x = x[:, self.gene_idx]
+
+            if self.rank_order:
+                gene_vals[n, :] = self._rank_order(x)
+            else:
+                gene_vals[n, :] = self._normalize(x)
+
+        zero_idx = np.where(gene_vals == 0)
+        gene_vals = torch.from_numpy(gene_vals)
+        # return two copies since we'll modify gene_vals but keep gene_targets as is
+        return gene_vals, gene_vals, zero_idx
+
+    def _normalize(self, x: np.ndarray) -> np.ndarray:
+        x = x * self.normalize_total / np.sum(x, axis=1, keepdims=True) if self.normalize_total is not None else x
+        x = np.log1p(x) if self.log_normalize else x
+        return x
+
+    def _rank_order(self, x: np.ndarray) -> np.ndarray:
+        """Will assign scores from 0 (lowest) to 1 (highest)."""
+        cell_rank = np.zeros_like(x)
+        for i in range(x.shape[0]):
+            unique_counts = np.unique(x[i, :])
+            rank_score = np.linspace(0.0, 1.0, len(unique_counts))
+            for n, count in enumerate(unique_counts):
+                idx = np.where(x[i, :] == count)[0]
+                cell_rank[i, idx] = rank_score[n]
+
+        return cell_rank
+
+
 class DataModule(pl.LightningDataModule):
 
     # data_path: Path to directory with preprocessed data.
@@ -174,7 +275,6 @@ class DataModule(pl.LightningDataModule):
     def __init__(
         self,
         data_path: str,
-        frac: float = 0.15,
         batch_size: int = 32,
         num_workers: int = 16,
         n_mask: int = 316,
@@ -183,7 +283,6 @@ class DataModule(pl.LightningDataModule):
     ):
         super().__init__()
         self.data_path = data_path
-        self.frac = frac
         self.batch_size = batch_size
         self.num_workers = num_workers
         self.n_mask = n_mask
@@ -216,6 +315,128 @@ class DataModule(pl.LightningDataModule):
         print(f"number of genes {self.n_genes}")
 
     # return the dataloader for each split
+    def train_dataloader(self):
+        sampler = BatchSampler(
+            RandomSampler(self.train_dataset),
+            batch_size=self.train_dataset.batch_size,
+            drop_last=True,
+        )
+        dl = DataLoader(
+            self.train_dataset,
+            batch_size=None,
+            batch_sampler=None,
+            sampler=sampler,
+            num_workers=self.num_workers,
+            pin_memory=False,
+        )
+        return dl
+
+    def val_dataloader(self):
+        sampler = BatchSampler(
+            SequentialSampler(self.val_dataset),
+            batch_size=self.val_dataset.batch_size,
+            drop_last=True,
+        )
+        dl = DataLoader(
+            self.val_dataset,
+            batch_size=None,
+            batch_sampler=None,
+            sampler=sampler,
+            num_workers=self.num_workers,
+            pin_memory=False,
+        )
+        return dl
+
+
+class DataModuleAnndata(pl.LightningDataModule):
+
+    # data_path: Path to directory with preprocessed data.
+    # classify: Name of column from `obs` table to add classification task with. (optional)
+    # Fraction of median genes to mask for prediction.
+    # batch_size: Dataloader batch size
+    # num_workers: Number of workers for DataLoader.
+
+    def __init__(
+        self,
+        anndata_path: str,
+        batch_size: int = 32,
+        num_workers: int = 16,
+        n_mask: int = 316,
+        rank_order: bool = False,
+        predict_classes: Optional[Dict[str, int]] = None,
+        gene_min_pct_threshold: float = 0.02,
+        min_genes_per_cell: int = 1000,
+        train_pct: float = 0.9,
+    ):
+        super().__init__()
+
+        self.anndata = sc.read_h5ad(anndata_path, "r")
+        self.batch_size = batch_size
+        self.num_workers = num_workers
+        self.n_mask = n_mask
+        self.rank_order = rank_order
+        self.predict_classes = predict_classes
+        self.gene_min_pct_threshold = gene_min_pct_threshold
+        self.min_genes_per_cell = min_genes_per_cell
+        self.train_pct = train_pct
+
+        self._train_test_splits()
+        self._get_gene_index()
+
+    def setup(self, stage):
+
+        self.train_dataset = AnnDataset(
+            self.anndata,
+            self.train_idx,
+            self.gene_idx,
+            32 * 2000,
+            predict_classes=self.predict_classes,
+            n_mask=self.n_mask,
+            batch_size=self.batch_size,
+            rank_order=self.rank_order,
+            pin_memory=False,
+        )
+        self.val_dataset = AnnDataset(
+            self.anndata,
+            self.test_idx,
+            self.gene_idx,
+            32 * 200,
+            predict_classes=self.predict_classes,
+            n_mask=self.n_mask,
+            batch_size=self.batch_size,
+            rank_order=self.rank_order,
+            pin_memory=False,
+        )
+        self.n_genes = self.train_dataset.n_genes
+        print(f"number of genes {self.n_genes}")
+
+    def _train_test_splits(self):
+
+        # TODO: might want to make split by subjects
+        n_genes = self.anndata.obs["n_genes"].values
+        cell_idx = np.where(n_genes > self.min_genes_per_cell)[0]
+        np.random.shuffle(cell_idx)
+        n = len(cell_idx)
+        self.train_idx = cell_idx[: int(n * self.train_pct)]
+        self.test_idx = cell_idx[int(n * self.train_pct):]
+        print(f"Number of training cells: {len(self.train_idx)}")
+        print(f"Number of test cells: {len(self.test_idx)}")
+
+    def _get_gene_index(self, chunk_size: int = 10_000, n_segments: int = 5):
+
+        n = self.anndata.shape[0]
+        start_idx = np.linspace(0, n - chunk_size - 1, n_segments)
+        gene_expression = []
+
+        for i in start_idx:
+            x = self.anndata[int(i): int(i + chunk_size)].to_memory()
+            x = x.X.toarray()
+            gene_expression.append(np.mean(x > 0, axis=0))
+
+        gene_expression = np.mean(np.stack(gene_expression), axis=0)
+        self.gene_idx = np.where(gene_expression >= self.gene_min_pct_threshold)[0]
+        print(f"Number of genes selected: {len(self.gene_idx)}")
+
     def train_dataloader(self):
         sampler = BatchSampler(
             RandomSampler(self.train_dataset),

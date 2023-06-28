@@ -1,7 +1,7 @@
 import torch
 import pytorch_lightning as pl
 from pytorch_lightning import Trainer, seed_everything
-from datasets import DataModule
+from datasets import DataModule, DataModuleAnndata
 from networks import Exceiver, extract_state_dict
 from tasks import MSELoss
 from config import dataset_cfg, task_cfg, model_cfg, trainer_cfg
@@ -21,7 +21,9 @@ def main():
     seed_everything(2299)
 
     # Set up data module
-    dm = DataModule(**dataset_cfg)
+    # dm = DataModule(**dataset_cfg)
+    dm = DataModuleAnndata(**dataset_cfg)
+
     dm.setup(None)
 
     # Create network
