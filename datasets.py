@@ -285,7 +285,8 @@ class DataModule(pl.LightningDataModule):
         data_path: str,
         batch_size: int = 32,
         num_workers: int = 16,
-        n_mask: int = 316,
+        n_min_mask: int = 1,
+        n_max_mask: int = 100,
         rank_order: bool = False,
         predict_classes: Optional[Dict[str, int]] = None,
     ):
@@ -293,7 +294,8 @@ class DataModule(pl.LightningDataModule):
         self.data_path = data_path
         self.batch_size = batch_size
         self.num_workers = num_workers
-        self.n_mask = n_mask
+        self.n_max_mask = n_max_mask
+        self.rank_order = rank_order
         self.rank_order = rank_order
         self.predict_classes = predict_classes
 
@@ -304,7 +306,8 @@ class DataModule(pl.LightningDataModule):
             os.path.join(self.data_path, "train_metadata.pkl"),
             32 * 2000,
             predict_classes=self.predict_classes,
-            n_mask=self.n_mask,
+            n_min_mask=self.n_min_mask,
+            n_max_mask=self.n_max_mask,
             batch_size=self.batch_size,
             rank_order=self.rank_order,
             pin_memory=False,
@@ -314,7 +317,8 @@ class DataModule(pl.LightningDataModule):
             os.path.join(self.data_path, "test_metadata.pkl"),
             32 * 200,
             predict_classes=self.predict_classes,
-            n_mask=self.n_mask,
+            n_min_mask=self.n_min_mask,
+            n_max_mask=self.n_max_mask,
             batch_size=self.batch_size,
             rank_order=self.rank_order,
             pin_memory=False,
@@ -369,7 +373,8 @@ class DataModuleAnndata(pl.LightningDataModule):
         anndata_path: str,
         batch_size: int = 32,
         num_workers: int = 16,
-        n_mask: int = 316,
+        n_min_mask: int = 1,
+        n_max_mask: int = 100,
         rank_order: bool = False,
         predict_classes: Optional[Dict[str, int]] = None,
         gene_min_pct_threshold: float = 0.02,
@@ -381,7 +386,8 @@ class DataModuleAnndata(pl.LightningDataModule):
         self.anndata = sc.read_h5ad(anndata_path, "r")
         self.batch_size = batch_size
         self.num_workers = num_workers
-        self.n_mask = n_mask
+        self.n_min_mask = n_min_mask
+        self.n_max_mask = n_max_mask
         self.rank_order = rank_order
         self.predict_classes = predict_classes
         self.gene_min_pct_threshold = gene_min_pct_threshold
@@ -399,7 +405,8 @@ class DataModuleAnndata(pl.LightningDataModule):
             self.gene_idx,
             32 * 2000,
             predict_classes=self.predict_classes,
-            n_mask=self.n_mask,
+            n_min_mask=self.n_min_mask,
+            n_max_mask=self.n_max_mask,
             batch_size=self.batch_size,
             rank_order=self.rank_order,
             pin_memory=False,
@@ -410,7 +417,8 @@ class DataModuleAnndata(pl.LightningDataModule):
             self.gene_idx,
             32 * 200,
             predict_classes=self.predict_classes,
-            n_mask=self.n_mask,
+            n_min_mask=self.n_min_mask,
+            n_max_mask=self.n_max_mask,
             batch_size=self.batch_size,
             rank_order=self.rank_order,
             pin_memory=False,
