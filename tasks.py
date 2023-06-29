@@ -26,7 +26,8 @@ class MSELoss(pl.LightningModule):
             self.cross_ent = {}
             self.accuracy = {}
             for k, v in self.class_dist.items():
-                self.cross_ent[k] = nn.CrossEntropyLoss(weight=torch.from_numpy(np.float32(1 / v)))
+                w = torch.clip(torch.from_numpy(np.float32(1 / v)), 0.0, 999.0)
+                self.cross_ent[k] = nn.CrossEntropyLoss(weight=w)
                 self.accuracy[k] = Accuracy(task="multiclass", num_classes=len(v), average="macro")
         else:
             self.cross_ent = self.accuracy = None
@@ -51,7 +52,9 @@ class MSELoss(pl.LightningModule):
         if self.class_dist is not None:
             for n, (k, v) in enumerate(self.class_dist.items()):
                 cross_entropy = self.cross_ent[k].to(device=class_pred[k].device)
-                class_loss += cross_entropy(class_pred[k], class_targets[:, n])
+                # class values of -1 will be masked out
+                idx = torch.where(class_targets[:, n] >= 0)
+                class_loss += cross_entropy(class_pred[k][idx], class_targets[idx, n])
 
         # TODO: fit this
         alpha = 10.0
@@ -60,6 +63,7 @@ class MSELoss(pl.LightningModule):
 
         self.log("train_mse", mse_loss, on_step=False, on_epoch=True, prog_bar=True)
         self.log("train_class", class_loss, on_step=False, on_epoch=True, prog_bar=True)
+        self.log("loss", loss, on_step=True, on_epoch=True, prog_bar=True)
         return loss
 
 
@@ -77,16 +81,17 @@ class MSELoss(pl.LightningModule):
             acc = {}
 
             for n, k in enumerate(self.class_dist.keys()):
-                class_predict_idx = torch.argmax(class_pred[k], dim=-1)#.to(device="cpu")
+                class_predict_idx = torch.argmax(class_pred[k], dim=-1)
                 metric = self.accuracy[k].to(device=class_pred[k].device)
-                acc[k] = metric(class_predict_idx, class_targets[:, n])
-                # print(class_targets[:, n])
-        # metrics = self.val_metrics(y_hat, mask_vals.unsqueeze(2))
-        # loss_dict = {"val_MSELoss": loss}
+                # class values of -1 will be masked out
+                idx = torch.where(class_targets[:, n] >= 0)
+                acc[k] = metric(class_predict_idx[idx], class_targets[idx, n])
+
         self.log("val_EV", ev, on_step=False, on_epoch=True, prog_bar=True)
+
         for k, v in acc.items():
             self.log(k, v, on_step=False, on_epoch=True, prog_bar=True)
-        #self.log("tissue_acc", acc, on_step=False, on_epoch=True, prog_bar=True)
+
         return loss
 
 
@@ -120,7 +125,6 @@ class MSELoss(pl.LightningModule):
             current_epoch,
             batch_nb,
             optimizer,
-            optimizer_idx,
             closure,
             on_tpu=None,
             using_native_amp=None,

@@ -69,6 +69,10 @@ class SingleCellDataset(Dataset):
             self.class_dist = {}
             for k in self.predict_classes.keys():
                 unique_list, counts = np.unique(self.metadata["obs"][k], return_counts=True)
+                # remove nans, negative values, or anything else suspicious
+                idx = [n for n, u in enumerate(unique_list) if isinstance(u, str) or u >= 0 or u <= 999]
+                unique_list = unique_list[idx]
+                counts = counts[idx]
                 self.class_unique[k] = np.array(unique_list)
                 self.class_dist[k] = counts / np.max(counts)
         else:
@@ -82,7 +86,9 @@ class SingleCellDataset(Dataset):
         class_vals = np.zeros((self.batch_size, self.n_classes), dtype=np.int64)
         for n0, i in enumerate(idx):
             for n1, (k, v) in enumerate(self.class_unique.items()):
-                class_vals[n0, n1] = np.where(self.metadata["obs"][k][i] == v)[0]
+                idx = np.where(self.metadata["obs"][k][i] == v)
+                # class values of -1 will imply N/A, and will be masked out
+                class_vals[n0, n1] = -1 if len(idx) == 0 else idx[0]
 
         return torch.from_numpy(class_vals)
 
