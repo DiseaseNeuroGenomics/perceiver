@@ -155,8 +155,8 @@ class CreateData:
         for n in range(len(idx) // chunk_size + 1):
             m = np.minimum(len(idx), (n + 1) * chunk_size)
             current_idx = idx[n * chunk_size: m]
-            print(f"Create dataset, cell number = {current_idx[0]}")
-            y = self.anndata[current_idx]  #.to_memory()  #  TODO: do I need this to_memory call?
+            print(f"Creating dataset, cell number = {current_idx[0]}")
+            y = self.anndata[current_idx].to_memory()
             y = y.X.toarray().astype(np.float32)
             y = y[:, self.gene_idx]
             if self.rank_order:
