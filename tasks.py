@@ -25,7 +25,7 @@ class MSELoss(pl.LightningModule):
         if self.class_dist is not None:
             self.cross_ent = {}
             self.accuracy = {}
-            for k, v in self.class_dist.items():
+            for k, v in self.network.class_dist.items():
                 w = torch.clip(torch.from_numpy(np.float32(1 / v)), 0.0, 999.0)
                 self.cross_ent[k] = nn.CrossEntropyLoss(weight=w)
                 self.accuracy[k] = Accuracy(task="multiclass", num_classes=len(v), average="macro")
@@ -49,8 +49,8 @@ class MSELoss(pl.LightningModule):
         mse_loss = self.mse(gene_pred, gene_targets.unsqueeze(2))
         class_loss = 0
 
-        if self.class_dist is not None:
-            for n, (k, v) in enumerate(self.class_dist.items()):
+        if self.network.class_dist is not None:
+            for n, (k, v) in enumerate(self.network.class_dist.items()):
                 cross_entropy = self.cross_ent[k].to(device=class_pred[k].device)
                 # class values of -1 will be masked out
                 idx = torch.where(class_targets[:, n] >= 0)
@@ -77,10 +77,10 @@ class MSELoss(pl.LightningModule):
         loss = self.mse(gene_pred, gene_targets.unsqueeze(2))
         ev = self.explained_var(gene_pred, gene_targets.unsqueeze(2))
 
-        if self.class_dist is not None:
+        if self.network.class_dist is not None:
             acc = {}
 
-            for n, k in enumerate(self.class_dist.keys()):
+            for n, k in enumerate(self.network.class_dist.keys()):
                 class_predict_idx = torch.argmax(class_pred[k], dim=-1)
                 metric = self.accuracy[k].to(device=class_pred[k].device)
                 # class values of -1 will be masked out

@@ -20,8 +20,9 @@ class SingleCellDataset(Dataset):
         data_path: str,
         metadata_path: str,
         cells_per_epochs: int,
-        predict_classes: Optional[Dict[str, int]] = None,
-        n_mask: int = 316,
+        predict_classes: Optional[List[str]] = None,
+        n_min_mask: int = 1,
+        n_max_mask: int = 500,
         batch_size: int = 32,
         rank_order: bool = True,
         scale_by_max: bool = False,
@@ -33,9 +34,10 @@ class SingleCellDataset(Dataset):
         self.cells_per_epochs = cells_per_epochs
         self.predict_classes = predict_classes
         self.n_samples = len(self.metadata["obs"]["class"])
-        self.n_genes = len(self.metadata["var"]["gene_name"])
+        self.n_genes = len(self.metadata["var"])
         self.n_classes = len(predict_classes) if predict_classes is not None else 0
-        self.n_mask = n_mask
+        self.n_min_mask = n_min_mask
+        self.n_max_mask = n_max_mask
         self.batch_size = batch_size
         self.rank_order = rank_order
         self.scale_by_max = scale_by_max
@@ -53,13 +55,11 @@ class SingleCellDataset(Dataset):
         """"Create the gene and class ids. Will start with the gene ids, and then concatenate
         the class ids if requested"""
         gene_ids = torch.arange(0, self.n_genes).repeat(self.batch_size, 1)
-        if self.predict_classes is not None:
+        if self.n_classes > 0:
             class_ids = torch.arange(0, self.n_classes).repeat(self.batch_size, 1)
         else:
             class_ids = None
 
-        #### TESTING !!
-        # class_ids = torch.ones_like(class_ids)
         return gene_ids, class_ids
 
     def _get_class_info(self):
@@ -67,7 +67,7 @@ class SingleCellDataset(Dataset):
         if self.predict_classes is not None:
             self.class_unique = {}
             self.class_dist = {}
-            for k in self.predict_classes.keys():
+            for k in self.predict_classes:
                 unique_list, counts = np.unique(self.metadata["obs"][k], return_counts=True)
                 # remove nans, negative values, or anything else suspicious
                 idx = [n for n, u in enumerate(unique_list) if isinstance(u, str) or u >= 0 or u <= 999]
@@ -131,7 +131,9 @@ class SingleCellDataset(Dataset):
         rnd_idx = []
         for i in range(self.batch_size):
             nonzero_idx = torch.where(key_padding_mask[i, :] == 0)[0]
-            k = np.random.choice(nonzero_idx, self.n_mask, replace=False)
+            # randomly choose number to mask for each cell
+            n = np.random.randint((self.n_min_mask, self.n_max_mask))
+            k = np.random.choice(nonzero_idx, n, replace=False)
             rnd_idx.append(k)
         rnd_idx = np.concatenate(rnd_idx, axis=-1)
         mask_col_ids = torch.tensor(rnd_idx).long()

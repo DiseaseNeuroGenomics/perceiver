@@ -58,16 +58,17 @@ class ProcessSelfAttn(nn.Module):
         n_layers: int,
         n_heads: int,
         dim_feedforward: int = 2048,
-        dropout: float = 0.2,
+        dropout: float = 0.0,
     ):
         super().__init__()
         self.encoder_layer = nn.TransformerEncoderLayer(
             embed_dim,
             n_heads,
             dim_feedforward,
-            dropout,
+            dropout=dropout,
             activation="gelu",
             batch_first=True,
+            norm_first=True,  # NYM June 24
         )
         self.transformer = nn.TransformerEncoder(self.encoder_layer, n_layers)
 
@@ -156,6 +157,7 @@ class Exceiver(nn.Module):
         if self.rank_order:
             self.gene_emb_low = nn.Embedding(self.seq_len + 1, self.seq_dim, padding_idx=self.seq_len)
             self.gene_emb_high = nn.Embedding(self.seq_len + 1, self.seq_dim, padding_idx=self.seq_len)
+            # self.gene_emb_low.weight.data = 0.1 * self.gene_emb_low.weight.data + 0.9 * self.gene_emb_high.weight.data
         else:
             self.gene_emb = nn.Embedding(self.seq_len + 1, self.seq_dim, padding_idx=self.seq_len)
             self.gene_val_w = nn.Parameter(torch.ones(1, self.seq_len - 1))

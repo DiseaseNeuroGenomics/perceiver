@@ -2,10 +2,11 @@
 dataset_cfg = {
     # "data_path": "/home/masse/work/perceiver/data_scaled",
     "anndata_path": "/home/masse/Downloads/RUSH_2023-06-08_21_44.h5ad",
-    "predict_classes": {"CERAD": 4, "BRAAK_AD": 7, "class": 8},
+    "predict_classes": ["CERAD", "BRAAK_AD", "class"],
     "batch_size": 32,
     "num_workers": 16,
-    "n_mask": 100,
+    "n_min_mask": 10,
+    "n_max_mask": 250,
     "rank_order": True,
 }
 
@@ -13,6 +14,7 @@ trainer_cfg = {
     "accumulate_grad_batches": 2,
     "precision": "bf16",
     "grad_clip_value": 0.5,
+    "cuda_visible_devices": "0,1",
 }
 
 task_cfg = {
