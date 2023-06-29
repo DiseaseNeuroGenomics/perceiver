@@ -128,11 +128,25 @@ class CreateData:
 
     def _get_gene_index(self):
 
-        temp_adata = self.anndata[:200_000].to_memory()
-        temp_adata = temp_adata.X.toarray().astype(np.float32)
-        gene_expression = np.mean(temp_adata, axis=0)
-        self.gene_idx = np.where(gene_expression > self.min_percent_cells_per_gene)[0]
+        if "percent_cells" in self.anndata.var.keys():
+            self.gene_idx = np.where(self.anndata.var["percent_cells"] > self.min_percent_cells_per_gene)[0]
+        else:
+            chunk_size = 10_000
+            n_segments = 10
+            n = self.anndata.shape[0]
+            start_idx = np.linspace(0, n - chunk_size - 1, n_segments)
+            gene_expression = []
 
+            for i in start_idx:
+                x = self.anndata[int(i): int(i + chunk_size)].to_memory()
+                x = x.X.toarray()
+                gene_expression.append(np.mean(x > 0, axis=0))
+
+            gene_expression = np.mean(np.stack(gene_expression), axis=0)
+            self.gene_idx = np.where(gene_expression >= self.gene_min_pct_threshold)[0]
+
+        print(f"Number of genes selected: {len(self.gene_idx)}")
+        
     def _get_cell_index(self):
 
         n_genes = self.anndata.obs["n_genes"].values
