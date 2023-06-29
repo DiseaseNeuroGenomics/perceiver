@@ -38,7 +38,7 @@ class CreateData:
 
         self.obs_keys = ['CERAD', 'BRAAK_AD', 'Dementia', 'AD', 'class', 'subclass', 'subtype', 'ApoE_gt', 'Sex',
                         'Head_Injury', 'Vascular', 'Age', 'Epilepsy', 'Seizures', 'Tumor']
-        # self.var_keys = ['gene_id', 'gene_name', 'gene_type']
+        self.var_keys = ['gene_id', 'gene_name', 'gene_type']
 
         self.anndata = sc.read_h5ad(source_fn, 'r')
 
@@ -106,7 +106,6 @@ class CreateData:
 
         meta = {
             "obs": {k: self.anndata.obs[k][idx].values for k in self.obs_keys},
-            # "var": {k: self.anndata.var[k][idx_genes].values for k in self.var_keys},
             "var": self.anndata.var[self.gene_idx],
             "stats": {
                 "mean": self.mean,
@@ -119,6 +118,15 @@ class CreateData:
                 "rank_order": self.rank_order,
             },
         }
+
+        if "gene_name" in self.anndata.var.keys():
+            meta["var"] = self.anndata.var["gene_name"][self.gene_idx]
+        else:
+            meta["var"] = self.anndata.var[self.gene_idx]
+
+        for k in self.var_keys:
+            if k in self.anndata.var.keys():
+
         k = self.obs_keys[0]
         pickle.dump(meta, open(meatadata_fn, "wb"))
 
@@ -139,16 +147,16 @@ class CreateData:
         idx = self.train_idx if train else self.test_idx
         data_fn = "train_data.dat" if train else "test_data.dat"
         data_fn = os.path.join(self.target_path, data_fn)
-        n_genes = self.anndata.shape[1]
+        n_genes = len(self.gene_idx)
 
-        chunk_size = 100_000  # chunk size for loading data into memory
+        chunk_size = 50_000  # chunk size for loading data into memory
         fp = np.memmap(data_fn, dtype='float16', mode='w+', shape=(len(idx), n_genes))
 
         for n in range(len(idx) // chunk_size + 1):
             m = np.minimum(len(idx), (n + 1) * chunk_size)
             current_idx = idx[n * chunk_size: m]
             print(f"Create dataset, cell number = {current_idx[0]}")
-            y = self.anndata[current_idx].to_memory()
+            y = self.anndata[current_idx]  #.to_memory()  #  TODO: do I need this to_memory call?
             y = y.X.toarray().astype(np.float32)
             y = y[:, self.gene_idx]
             if self.rank_order:
