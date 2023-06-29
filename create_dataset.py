@@ -106,7 +106,6 @@ class CreateData:
 
         meta = {
             "obs": {k: self.anndata.obs[k][idx].values for k in self.obs_keys},
-            "var": self.anndata.var[self.gene_idx],
             "stats": {
                 "mean": self.mean,
                 "std": self.std,
@@ -129,7 +128,7 @@ class CreateData:
     def _get_gene_index(self):
 
         if "percent_cells" in self.anndata.var.keys():
-            self.gene_idx = np.where(self.anndata.var["percent_cells"] > self.min_percent_cells_per_gene)[0]
+            self.gene_idx = np.where(self.anndata.var["percent_cells"] > 100 * self.min_percent_cells_per_gene)[0]
         else:
             chunk_size = 10_000
             n_segments = 10
@@ -146,7 +145,7 @@ class CreateData:
             self.gene_idx = np.where(gene_expression >= self.gene_min_pct_threshold)[0]
 
         print(f"Number of genes selected: {len(self.gene_idx)}")
-        
+
     def _get_cell_index(self):
 
         n_genes = self.anndata.obs["n_genes"].values
@@ -159,10 +158,10 @@ class CreateData:
         data_fn = os.path.join(self.target_path, data_fn)
         n_genes = len(self.gene_idx)
 
-        chunk_size = 50_000  # chunk size for loading data into memory
+        chunk_size = 25_000  # chunk size for loading data into memory
         fp = np.memmap(data_fn, dtype='float16', mode='w+', shape=(len(idx), n_genes))
 
-        for n in range(len(idx) // chunk_size + 1):
+        for n in range(np.ceil(len(idx) / chunk_size)):
             m = np.minimum(len(idx), (n + 1) * chunk_size)
             current_idx = idx[n * chunk_size: m]
             print(f"Creating dataset, cell number = {current_idx[0]}")
