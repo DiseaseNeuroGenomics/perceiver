@@ -124,10 +124,6 @@ class CreateData:
         else:
             meta["var"] = self.anndata.var[self.gene_idx]
 
-        for k in self.var_keys:
-            if k in self.anndata.var.keys():
-
-        k = self.obs_keys[0]
         pickle.dump(meta, open(meatadata_fn, "wb"))
 
     def _get_gene_index(self):
