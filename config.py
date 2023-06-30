@@ -7,8 +7,7 @@ dataset_cfg = {
     "predict_classes": ["BRAAK_AD", "CERAD", "class"],
     "batch_size": 128,
     "num_workers": 16,
-    "n_min_mask": 10,
-    "n_max_mask": 250,
+    "n_min_mask": 100,
     "rank_order": True,
 }
 

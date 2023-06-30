@@ -58,7 +58,7 @@ class SingleCellDataset(Dataset):
         if self.n_classes > 0:
             if self.same_latent_class:
                 # this will project all the class related latent info onto the same subspace, simplifying analysis
-                class_ids = torch.zeros(self.batch_size, self.n_classes)
+                class_ids = torch.zeros((self.batch_size, self.n_classes), dtype=torch.int64)
             else:
                 class_ids = torch.arange(0, self.n_classes).repeat(self.batch_size, 1)
         else:
