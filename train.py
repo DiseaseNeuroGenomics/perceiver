@@ -37,12 +37,12 @@ def main():
 
     trainer = pl.Trainer(
         accelerator='gpu',
-        devices=trainer_cfg["n_device"],
+        devices=trainer_cfg["n_devices"],
         max_epochs=1000,
         gradient_clip_val=trainer_cfg["grad_clip_value"],
         accumulate_grad_batches=trainer_cfg["accumulate_grad_batches"],
         precision=trainer_cfg["precision"],
-        strategy=DDPStrategy(find_unused_parameters=True) if trainer_cfg["n_device"] > 1 else None,
+        strategy=DDPStrategy(find_unused_parameters=True) if trainer_cfg["n_devices"] > 1 else None,
         # callbacks=[early_stop, checkpoint_callback],
     )
 
