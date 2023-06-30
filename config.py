@@ -15,6 +15,7 @@ trainer_cfg = {
     "accumulate_grad_batches": 1,
     "precision": "bf16",
     "grad_clip_value": 0.5,
+    "n_devices": 1,
 }
 
 task_cfg = {
