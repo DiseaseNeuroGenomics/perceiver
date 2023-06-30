@@ -49,7 +49,7 @@ class SingleCellDataset(Dataset):
 
 
     def __len__(self):
-        return self.n_samples
+        return self.cells_per_epochs
 
     def _create_gene_class_ids(self):
         """"Create the gene and class ids. Will start with the gene ids, and then concatenate
@@ -120,9 +120,6 @@ class SingleCellDataset(Dataset):
         key_padding_mask[zero_idx[0], zero_idx[1]] = 1.0
 
         return gene_vals, key_padding_mask, gene_targets, class_targets
-
-    def __len__(self):
-        return self.cells_per_epochs
 
     def __getitem__(self, idx: List[int]):
 
