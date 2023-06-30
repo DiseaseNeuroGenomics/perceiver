@@ -5,8 +5,8 @@ dataset_cfg = {
     "test_data_path": "/ssd/rush_data/train_data.dat",
     "test_metadata_path": "/ssd/rush_data/train_metadata.pkl",
     "predict_classes": ["BRAAK_AD", "CERAD", "class"],
-    "batch_size": 128,
-    "num_workers": 16,
+    "batch_size": 64,
+    "num_workers": 12,
     "n_mask": 100,
     "rank_order": True,
 }
@@ -22,9 +22,9 @@ task_cfg = {
     # "classify": True,
     "learning_rate": 8e-5,
     "weight_decay": 0.00001,
-    "warmup_steps": 8_000,
+    "warmup_steps": 10_000,
     "decay_steps": 100_000,
-    "decay": 0.999985,
+    "decay": 0.999988,
 
 }
 
