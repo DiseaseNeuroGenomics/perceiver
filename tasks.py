@@ -26,8 +26,7 @@ class MSELoss(pl.LightningModule):
             self.cross_ent = {}
             self.accuracy = {}
             for k, v in self.network.class_dist.items():
-                w = torch.clip(torch.from_numpy(np.float32(1 / v)), 0.0, 999.0)
-                self.cross_ent[k] = nn.CrossEntropyLoss(weight=w)
+                self.cross_ent[k] = nn.CrossEntropyLoss(weight=torch.from_numpy(np.float32(1 / v)))
                 self.accuracy[k] = Accuracy(task="multiclass", num_classes=len(v), average="macro")
         else:
             self.cross_ent = self.accuracy = None
@@ -53,7 +52,7 @@ class MSELoss(pl.LightningModule):
             for n, (k, v) in enumerate(self.network.class_dist.items()):
                 cross_entropy = self.cross_ent[k].to(device=class_pred[k].device)
                 # class values of -1 will be masked out
-                idx = torch.where(class_targets[:, n] >= 0)
+                idx = torch.where(class_targets[:, n] >= 0)[0]
                 class_loss += cross_entropy(class_pred[k][idx], class_targets[idx, n])
 
         # TODO: fit this
@@ -84,33 +83,16 @@ class MSELoss(pl.LightningModule):
                 class_predict_idx = torch.argmax(class_pred[k], dim=-1)
                 metric = self.accuracy[k].to(device=class_pred[k].device)
                 # class values of -1 will be masked out
-                idx = torch.where(class_targets[:, n] >= 0)
+                idx = torch.where(class_targets[:, n] >= 0)[0]
                 acc[k] = metric(class_predict_idx[idx], class_targets[idx, n])
 
-        self.log("val_EV", ev, on_step=False, on_epoch=True, prog_bar=True)
+        self.log("gene_ex", ev, on_step=False, on_epoch=True, prog_bar=True)
 
         for k, v in acc.items():
             self.log(k, v, on_step=False, on_epoch=True, prog_bar=True)
 
         return loss
 
-
-    def test_step(self, batch, batch_idx):
-        gene_ids, gene_vals, mask_ids, mask_vals, key_padding_mask = batch
-
-        decoder_out = self.network.forward(
-            gene_ids, gene_vals, gene_ids, key_padding_mask, mask_ids
-        )
-        y_hat = self.network.mlp(decoder_out)
-        return y_hat, mask_vals
-
-
-    def test_step_end(self, results):
-        y_hat, mask_vals = results
-        loss = self.mse(y_hat, mask_vals.unsqueeze(2))
-        metrics = self.test_metrics(y_hat, mask_vals.unsqueeze(2))
-        loss_dict = {"test_MSELoss": loss}
-        self.log_dict(loss_dict | metrics, on_step=True, on_epoch=True, sync_dist=True)
 
 
     def configure_optimizers(self):
