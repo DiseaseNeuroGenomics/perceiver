@@ -38,6 +38,17 @@ class MSELoss(pl.LightningModule):
         self.val_metrics = self.metrics.clone(prefix="val_")
         self.test_metrics = self.metrics.clone(prefix="test_")
 
+        self._create_results_dict()
+
+    def _create_results_dict(self):
+
+        v = self.trainer.logger.version
+        self.results_fn = f"{self.trainer.log_dir}/lightning_logs/version_{v}/test_results.pkl"
+        self.results = {"epoch": 0}
+        for k in self.network.class_dist.keys():
+            self.results[k] = []
+            self.results["pred_" + k] = []
+
     def training_step(self, batch, batch_idx):
 
         gene_ids, gene_target_ids, class_ids, gene_vals, gene_targets, key_padding_mask, class_targets = batch
@@ -76,12 +87,12 @@ class MSELoss(pl.LightningModule):
         loss = self.mse(gene_pred, gene_targets.unsqueeze(2))
         ev = self.explained_var(gene_pred, gene_targets.unsqueeze(2))
 
-        v = self.trainer.logger.version
-        results_fn = f"{self.trainer.log_dir}/lightning_logs/version_{v}/test_results.pkl"
-        results = {"epoch": self.current_epoch}
-        for k in self.network.class_dist.keys():
-            results[k] = []
-            results["pred_" + k] = []
+        if self.current_epoch != self.results["epoch"]:
+            self.results["epoch"] = self.current_epoch
+            for k in self.network.class_dist.keys():
+                self.results[k] = []
+                self.results["pred_" + k] = []
+
 
         if self.network.class_dist is not None:
             acc = {}
@@ -92,14 +103,8 @@ class MSELoss(pl.LightningModule):
                 # class values of -1 will be masked out
                 idx = torch.where(class_targets[:, n] >= 0)[0]
                 acc[k] = metric(class_pred[k][idx], class_targets[idx, n])
-                results[k].append(class_targets[idx, n].detach().cpu().numpy())
-                results["pred_" + k].append(class_predict_idx[idx].detach().cpu().numpy())
-
-        for k in self.network.class_dist.keys():
-            results[k] = np.stack(results[k])
-            results["pred_" + k] = np.stack(results["pred_" + k])
-
-        pickle.dump(results, open(results_fn, "wb"))
+                self.results[k].append(class_targets[idx, n].detach().cpu().numpy())
+                self.results["pred_" + k].append(class_predict_idx[idx].detach().cpu().numpy())
 
         self.log("gene_ex", ev, on_step=False, on_epoch=True, prog_bar=True)
 
@@ -108,7 +113,13 @@ class MSELoss(pl.LightningModule):
 
         return loss
 
+    def on_validation_epoch_end(self):
 
+        for k in self.network.class_dist.keys():
+            self.results[k] = np.stack(self.results[k])
+            self.results["pred_" + k] = np.stack(self.results["pred_" + k])
+
+        pickle.dump(self.results, open(self.results_fn, "wb"))
 
     def configure_optimizers(self):
         return torch.optim.AdamW(
