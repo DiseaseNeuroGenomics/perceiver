@@ -1,9 +1,11 @@
 
 dataset_cfg = {
-    # "data_path": "/home/masse/work/perceiver/data_scaled",
-    "anndata_path": "/home/masse/Downloads/RUSH_2023-06-08_21_44.h5ad",
-    "predict_classes": ["CERAD", "BRAAK_AD", "class"],
-    "batch_size": 32,
+    "train_data_path": "/ssd/mssm_data/train_data.dat",
+    "train_metadata_path": "/ssd/mssm_data/train_metadata.pkl",
+    "test_data_path": "/ssd/rush_data/train_data.dat",
+    "test_metadata_path": "/ssd/rush_data/train_metadata.pkl",
+    "predict_classes": ["BRAAK_AD", "CERAD", "class"],
+    "batch_size": 128,
     "num_workers": 16,
     "n_min_mask": 10,
     "n_max_mask": 250,
@@ -11,15 +13,14 @@ dataset_cfg = {
 }
 
 trainer_cfg = {
-    "accumulate_grad_batches": 2,
+    "accumulate_grad_batches": 1,
     "precision": "bf16",
     "grad_clip_value": 0.5,
-    "cuda_visible_devices": "0,1",
 }
 
 task_cfg = {
     # "classify": True,
-    "learning_rate": 5e-5,
+    "learning_rate": 8e-5,
     "weight_decay": 0.00001,
     "warmup_steps": 8_000,
     "decay_steps": 100_000,
@@ -28,10 +29,10 @@ task_cfg = {
 }
 
 model_cfg = {
-    "seq_dim": 256+128,
+    "seq_dim": 512,
     "query_len": 64,
-    "query_dim": 256+128,
-    "n_layers": 12,
+    "query_dim": 512,
+    "n_layers": 10,
     "dim_feedforward": 1024,
     "n_heads": 2,
     "dropout": 0.0,
