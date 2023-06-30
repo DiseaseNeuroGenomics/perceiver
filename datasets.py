@@ -26,6 +26,7 @@ class SingleCellDataset(Dataset):
         rank_order: bool = True,
         scale_by_max: bool = False,
         pin_memory: bool = False,
+        same_latent_class: bool = True,
     ):
 
         self.metadata = pickle.load(open(metadata_path, "rb"))
@@ -40,6 +41,7 @@ class SingleCellDataset(Dataset):
         self.rank_order = rank_order
         self.scale_by_max = scale_by_max
         self.pin_memory = pin_memory
+        self.same_latent_class = same_latent_class
 
         self.offset = 2 * self.n_genes  # FP16 is 2 bytes
         self._get_class_info()
@@ -54,7 +56,11 @@ class SingleCellDataset(Dataset):
         the class ids if requested"""
         gene_ids = torch.arange(0, self.n_genes).repeat(self.batch_size, 1)
         if self.n_classes > 0:
-            class_ids = torch.arange(0, self.n_classes).repeat(self.batch_size, 1)
+            if self.same_latent_class:
+                # this will project all the class related latent info onto the same subspace, simplifying analysis
+                class_ids = torch.zeros(self.batch_size, self.n_classes)
+            else:
+                class_ids = torch.arange(0, self.n_classes).repeat(self.batch_size, 1)
         else:
             class_ids = None
 
