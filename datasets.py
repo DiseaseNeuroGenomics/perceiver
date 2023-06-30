@@ -91,7 +91,7 @@ class SingleCellDataset(Dataset):
         class_vals = np.zeros((self.batch_size, self.n_classes), dtype=np.int64)
         for n0, i in enumerate(batch_idx):
             for n1, (k, v) in enumerate(self.class_unique.items()):
-                idx = np.where(self.metadata["obs"][k][i] == v)
+                idx = np.where(self.metadata["obs"][k][i] == v)[0] 
                 # class values of -1 will imply N/A, and will be masked out
                 class_vals[n0, n1] = -1 if len(idx) == 0 else idx[0]
 
