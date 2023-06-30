@@ -37,7 +37,6 @@ class MSELoss(pl.LightningModule):
         self.val_metrics = self.metrics.clone(prefix="val_")
         self.test_metrics = self.metrics.clone(prefix="test_")
 
-
     def training_step(self, batch, batch_idx):
 
         gene_ids, gene_target_ids, class_ids, gene_vals, gene_targets, key_padding_mask, class_targets = batch
