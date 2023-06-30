@@ -1,3 +1,4 @@
+import pickle
 import torch
 from torch import nn
 import numpy as np
@@ -75,6 +76,13 @@ class MSELoss(pl.LightningModule):
         loss = self.mse(gene_pred, gene_targets.unsqueeze(2))
         ev = self.explained_var(gene_pred, gene_targets.unsqueeze(2))
 
+        v = self.trainer.logger.version
+        results_fn = f"{self.trainer.log_dir}/lightning_logs/version_{v}/test_results.pkl"
+        results = {"epoch": self.current_epoch}
+        for k in self.network.class_dist.keys():
+            results[k] = []
+            results["pred_" + k] = []
+
         if self.network.class_dist is not None:
             acc = {}
 
@@ -83,7 +91,15 @@ class MSELoss(pl.LightningModule):
                 metric = self.accuracy[k].to(device=class_pred[k].device)
                 # class values of -1 will be masked out
                 idx = torch.where(class_targets[:, n] >= 0)[0]
-                acc[k] = metric(class_predict_idx[idx], class_targets[idx, n])
+                acc[k] = metric(class_pred[k][idx], class_targets[idx, n])
+                results[k].append(class_targets[idx, n].detach().cpu().numpy())
+                results["pred_" + k].append(class_predict_idx[idx].detach().cpu().numpy())
+
+        for k in self.network.class_dist.keys():
+            results[k] = np.stack(results[k])
+            results["pred_" + k] = np.stack(results["pred_" + k])
+
+        pickle.dump(results, open(results_fn, "wb"))
 
         self.log("gene_ex", ev, on_step=False, on_epoch=True, prog_bar=True)
 
