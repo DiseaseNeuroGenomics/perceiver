@@ -157,7 +157,8 @@ class Exceiver(nn.Module):
         if self.rank_order:
             self.gene_emb_low = nn.Embedding(self.seq_len + 1, self.seq_dim, padding_idx=self.seq_len)
             self.gene_emb_high = nn.Embedding(self.seq_len + 1, self.seq_dim, padding_idx=self.seq_len)
-            # self.gene_emb_low.weight.data = 0.1 * self.gene_emb_low.weight.data + 0.9 * self.gene_emb_high.weight.data
+            # TODO: I think this initialization below works...need to confirm
+            self.gene_emb_low.weight.data = 0.1 * self.gene_emb_low.weight.data + 0.9 * self.gene_emb_high.weight.data
         else:
             self.gene_emb = nn.Embedding(self.seq_len + 1, self.seq_dim, padding_idx=self.seq_len)
             self.gene_val_w = nn.Parameter(torch.ones(1, self.seq_len - 1))
@@ -202,6 +203,7 @@ class Exceiver(nn.Module):
         latent = self.process_self_attn(latent)
 
         # Query genes and classes
+        # Decoder out will contain the latent for both genes and classes, concatenated together
         decoder_out, decoder_weights = self.decoder_cross_attn(
             torch.cat((gene_target_query, class_target_query), dim=1),
             latent,
