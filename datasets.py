@@ -19,7 +19,6 @@ class SingleCellDataset(Dataset):
         self,
         data_path: str,
         metadata_path: str,
-        cells_per_epochs: int,
         predict_classes: Optional[List[str]] = None,
         n_mask: int = 100,
         batch_size: int = 32,
@@ -49,7 +48,7 @@ class SingleCellDataset(Dataset):
 
 
     def __len__(self):
-        return self.cells_per_epochs
+        return self.n_samples
 
     def _create_gene_class_ids(self):
         """"Create the gene and class ids. Will start with the gene ids, and then concatenate
@@ -300,8 +299,6 @@ class DataModule(pl.LightningDataModule):
         n_mask: int = 100,
         rank_order: bool = False,
         predict_classes: Optional[Dict[str, int]] = None,
-        n_train_cells: int = 256_000,
-        n_test_cells: int = 25_600,
 
     ):
         super().__init__()
@@ -314,15 +311,12 @@ class DataModule(pl.LightningDataModule):
         self.n_mask = n_mask
         self.rank_order = rank_order
         self.predict_classes = predict_classes
-        self.n_train_cells = n_train_cells
-        self.n_test_cells = n_test_cells
 
     def setup(self, stage):
 
         self.train_dataset = SingleCellDataset(
             self.train_data_path,
             self.train_metadata_path,
-            self.n_train_cells,
             predict_classes=self.predict_classes,
             n_mask=self.n_mask,
             batch_size=self.batch_size,
@@ -332,7 +326,6 @@ class DataModule(pl.LightningDataModule):
         self.val_dataset = SingleCellDataset(
             self.test_data_path,
             self.test_metadata_path,
-            self.n_test_cells,
             predict_classes=self.predict_classes,
             n_mask=self.n_mask,
             batch_size=self.batch_size,
