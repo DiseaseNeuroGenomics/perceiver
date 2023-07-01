@@ -43,7 +43,9 @@ def main():
         accumulate_grad_batches=trainer_cfg["accumulate_grad_batches"],
         precision=trainer_cfg["precision"],
         strategy=DDPStrategy(find_unused_parameters=True) if trainer_cfg["n_devices"] > 1 else "auto",
-        # callbacks=[early_stop, checkpoint_callback],
+        limit_train_batches=4000,
+        limit_val_batches-400,
+
     )
 
     trainer.fit(task, dm)
