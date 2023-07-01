@@ -94,8 +94,8 @@ class MSELoss(pl.LightningModule):
                 # class values of -1 will be masked out
                 idx = torch.where(class_targets[:, n] >= 0)[0]
                 acc[k] = metric(class_pred[k][idx], class_targets[idx, n])
-                self.results[k].append(class_targets[idx, n].detach().cpu().numpy())
-                self.results["pred_" + k].append(class_predict_idx[idx].detach().cpu().numpy())
+                self.results[k].append(class_targets[:, n].detach().cpu().numpy())
+                self.results["pred_" + k].append(class_predict_idx.detach().cpu().numpy())
 
         self.log("gene_ex", ev, on_step=False, on_epoch=True, prog_bar=True)
 
