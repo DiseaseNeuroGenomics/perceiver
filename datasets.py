@@ -74,7 +74,10 @@ class SingleCellDataset(Dataset):
             for k in self.predict_classes:
                 unique_list, counts = np.unique(self.metadata["obs"][k], return_counts=True)
                 # remove nans, negative values, or anything else suspicious
-                idx = [n for n, u in enumerate(unique_list) if isinstance(u, str) or (u >= 0 and u <= 999)]
+                if k == "ApoE_gt":
+                    idx = [n for n, u in enumerate(unique_list) if u in [23, 24, 33, 34, 44]]
+                else:
+                    idx = [n for n, u in enumerate(unique_list) if isinstance(u, str) or (u >= 0 and u <= 999)]
                 unique_list = unique_list[idx]
                 counts = counts[idx]
                 self.class_unique[k] = np.array(unique_list)

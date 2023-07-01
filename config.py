@@ -1,4 +1,8 @@
 dataset_cfg = {
+    #"train_data_path": "/ssd/mssm_data/train_data.dat",
+    #"train_metadata_path": "/ssd/mssm_data/train_metadata.pkl",
+    #"test_data_path": "/ssd/rush_data/train_data.dat",
+    #"test_metadata_path": "/ssd/rush_data/train_metadata.pkl",
     "train_data_path": "/sc/arion/projects/psychAD/massen06/mssm_data/train_data.dat",
     "train_metadata_path": "/sc/arion/projects/psychAD/massen06/mssm_data/train_metadata.pkl",
     "test_data_path": "/sc/arion/projects/psychAD/massen06/rush_data/train_data.dat",
