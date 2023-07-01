@@ -42,8 +42,6 @@ class MSELoss(pl.LightningModule):
 
     def _create_results_dict(self):
 
-        v = self.trainer.logger.version
-        self.results_fn = f"{self.trainer.log_dir}/lightning_logs/version_{v}/test_results.pkl"
         self.results = {"epoch": 0}
         for k in self.network.class_dist.keys():
             self.results[k] = []
@@ -87,13 +85,6 @@ class MSELoss(pl.LightningModule):
         loss = self.mse(gene_pred, gene_targets.unsqueeze(2))
         ev = self.explained_var(gene_pred, gene_targets.unsqueeze(2))
 
-        if self.current_epoch != self.results["epoch"]:
-            self.results["epoch"] = self.current_epoch
-            for k in self.network.class_dist.keys():
-                self.results[k] = []
-                self.results["pred_" + k] = []
-
-
         if self.network.class_dist is not None:
             acc = {}
 
@@ -115,11 +106,18 @@ class MSELoss(pl.LightningModule):
 
     def on_validation_epoch_end(self):
 
+        v = self.trainer.logger.version
+        fn = f"{self.trainer.log_dir}/lightning_logs/version_{v}/test_results.pkl"
         for k in self.network.class_dist.keys():
             self.results[k] = np.stack(self.results[k])
             self.results["pred_" + k] = np.stack(self.results["pred_" + k])
 
-        pickle.dump(self.results, open(self.results_fn, "wb"))
+        pickle.dump(self.results, open(fn, "wb"))
+
+        self.results["epoch"] = self.current_epoch + 1
+        for k in self.network.class_dist.keys():
+            self.results[k] = []
+            self.results["pred_" + k] = []
 
     def configure_optimizers(self):
         return torch.optim.AdamW(
