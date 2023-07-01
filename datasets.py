@@ -99,11 +99,16 @@ class SingleCellDataset(Dataset):
 
     def _get_gene_vals(self, batch_idx: List[int]):
 
+        x = np.memmap(
+                self.data_path, dtype='float16', mode='r', shape=(self.batch_size, self.n_genes,), offset=i * self.offset
+            ).astype(np.float32)
+
         gene_vals = np.zeros((self.batch_size, self.n_genes), dtype=np.float32)
         for n, i in enumerate(batch_idx):
-            gene_vals[n, :] = np.memmap(
-                self.data_path, dtype='float16', mode='r', shape=(self.n_genes,), offset=i * self.offset
-            ).astype(np.float32)
+            gene_vals[n, :] = x[n, :]
+            #gene_vals[n, :] = np.memmap(
+            #    self.data_path, dtype='float16', mode='r', shape=(self.n_genes,), offset=i * self.offset
+            #).astype(np.float32)
             if self.scale_by_max:
                 gene_vals[n, :] /= (1e-9 + self.metadata["stats"]["max"])
 
