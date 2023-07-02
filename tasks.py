@@ -24,10 +24,10 @@ class MSELoss(pl.LightningModule):
         # Functions and metrics
         self.mse = nn.MSELoss()
         if self.cell_properties is not None:
-            self.cell_prop_cross_ent = {}
-            self.cell_prop_mse = {}
-            self.cell_prop_accuracy = {}
-            self.cell_prop_explained_var = {}
+            self.cell_prop_cross_ent = nn.ModuleDict()
+            self.cell_prop_mse = nn.ModuleDict()
+            self.cell_prop_accuracy = nn.ModuleDict()
+            self.cell_prop_explained_var = nn.ModuleDict()
 
             for k, v in self.network.cell_properties.items():
                 if v is not None:
@@ -70,15 +70,21 @@ class MSELoss(pl.LightningModule):
         if self.network.cell_properties is not None:
             for n, (k, v) in enumerate(self.network.cell_properties.items()):
                 if k in self.cell_prop_cross_ent.keys():
-                    cross_ent = self.cell_prop_cross_ent[k].to(device=cell_prop_pred[k].device)
+                    #cross_ent = self.cell_prop_cross_ent[k].to(device=cell_prop_pred[k].device)
                     # class values of -1 will be masked out
                     idx = torch.where(cell_prop_targets[:, n] >= 0)[0]
-                    cell_prop_loss += cross_ent(cell_prop_pred[k][idx], cell_prop_targets[idx, n].to(torch.int64))
+                    #cell_prop_loss += cross_ent(cell_prop_pred[k][idx], cell_prop_targets[idx, n].to(torch.int64))
+                    cell_prop_loss += self.cell_prop_cross_ent[k](
+                        cell_prop_pred[k][idx], cell_prop_targets[idx, n].to(torch.int64)
+                    )
                 elif k in self.cell_prop_mse.keys():
-                    mse = self.cell_prop_mse[k].to(device=cell_prop_pred[k].device)
+                    # mse = self.cell_prop_mse[k].to(device=cell_prop_pred[k].device)
                     # class values less than -999 or greater than 999 will be masked out
                     idx = torch.where(cell_prop_targets[:, n] > -999)[0]
-                    cell_prop_loss += mse(cell_prop_pred[k][idx], cell_prop_targets[idx, n])
+                    #cell_prop_loss += mse(cell_prop_pred[k][idx], cell_prop_targets[idx, n])
+                    cell_prop_loss +=  self.cell_prop_mse[k](
+                        cell_prop_pred[k][idx], cell_prop_targets[idx, n]
+                    )
 
         # TODO: fit this
         alpha = 1.0
@@ -106,26 +112,32 @@ class MSELoss(pl.LightningModule):
             for n, (k, v) in enumerate(self.network.cell_properties.items()):
                 if k in self.cell_prop_cross_ent.keys():
                     predict_idx = torch.argmax(cell_prop_pred[k], dim=-1)
-                    metric = self.cell_prop_accuracy[k].to(device=cell_prop_pred[k].device)
+                    #metric = self.cell_prop_accuracy[k].to(device=cell_prop_pred[k].device)
                     # property values of -1 will be masked out
                     idx = torch.where(cell_prop_targets[:, n] >= 0)[0]
-                    cell_prop_acc[k] = metric(predict_idx[idx], cell_prop_targets[idx, n])
+                    #cell_prop_acc[k] = metric(predict_idx[idx], cell_prop_targets[idx, n])
+                    cell_prop_acc[k] = self.cell_prop_accuracy[k](
+                        predict_idx[idx], cell_prop_targets[idx, n]
+                    )
                     self.results[k].append(cell_prop_targets[:, n].detach().cpu().numpy())
                     self.results["pred_" + k].append(predict_idx.detach().cpu().numpy())
                 elif k in self.cell_prop_mse.keys():
-                    metric = self.cell_prop_mse[k].to(device=cell_prop_pred[k].device)
+                    #metric = self.cell_prop_mse[k].to(device=cell_prop_pred[k].device)
                     # property values < -999  will be masked out
                     idx = torch.where(cell_prop_targets[:, n] > - 999)[0]
-                    cell_prop_explained_var[k] = metric(cell_prop_pred[k][idx], cell_prop_targets[idx, n])
+                    #cell_prop_explained_var[k] = metric(cell_prop_pred[k][idx], cell_prop_targets[idx, n])
+                    cell_prop_explained_var[k] = self.cell_prop_mse[k](
+                        cell_prop_pred[k][idx], cell_prop_targets[idx, n]
+                    )
                     self.results[k].append(cell_prop_targets[:, n].detach().cpu().numpy())
                     self.results["pred_" + k].append(cell_prop_pred[k][idx].detach().cpu().to(torch.float32).numpy())
 
         self.log("gene_ex", ev, on_step=False, on_epoch=True, prog_bar=True)
 
         for k, v in cell_prop_acc.items():
-            self.log(k, v, on_step=False, on_epoch=True, prog_bar=True)
+            self.log(k, v, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         for k, v in cell_prop_explained_var.items():
-            self.log(k, v, on_step=False, on_epoch=True, prog_bar=True)
+            self.log(k, v, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
 
         return loss
 
