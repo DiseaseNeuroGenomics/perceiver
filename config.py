@@ -14,18 +14,18 @@ cell_properties = {
 
 
 dataset_cfg = {
-    #"train_data_path": "/ssd/mssm_data/train_data.dat",
-    #"train_metadata_path": "/ssd/mssm_data/train_metadata.pkl",
-    #"test_data_path": "/ssd/rush_data/train_data.dat",
-    #"test_metadata_path": "/ssd/rush_data/train_metadata.pkl",
-    "train_data_path": "/sc/arion/projects/psychAD/massen06/mssm_raw_data/train_data.dat",
-    "train_metadata_path": "/sc/arion/projects/psychAD/massen06/mssm_raw_data/train_metadata.pkl",
-    "test_data_path": "/sc/arion/projects/psychAD/massen06/rush_raw_data/train_data.dat",
-    "test_metadata_path": "/sc/arion/projects/psychAD/massen06/rush_raw_data/train_metadata.pkl",
+    "train_data_path": "/ssd/mssm_raw_data/train_data.dat",
+    "train_metadata_path": "/ssd/mssm_raw_data/train_metadata.pkl",
+    "test_data_path": "/ssd/mssm_raw_data/test_data.dat",
+    "test_metadata_path": "/ssd/mssm_raw_data/test_metadata.pkl",
+    #"train_data_path": "/sc/arion/projects/psychAD/massen06/mssm_raw_data/train_data.dat",
+    #"train_metadata_path": "/sc/arion/projects/psychAD/massen06/mssm_raw_data/train_metadata.pkl",
+    #"test_data_path": "/sc/arion/projects/psychAD/massen06/rush_raw_data/train_data.dat",
+    #"test_metadata_path": "/sc/arion/projects/psychAD/massen06/rush_raw_data/train_metadata.pkl",
     "cell_properties": cell_properties,
-    "batch_size": 128,
-    "num_workers": 6,
-    "n_mask": 100,
+    "batch_size": 64,
+    "num_workers": 10,
+    "n_mask": 200,
     "rank_order": False,
 }
 
@@ -33,14 +33,14 @@ trainer_cfg = {
     "accumulate_grad_batches": 1,
     "precision": "bf16-mixed",
     "grad_clip_value": 0.5,
-    "n_devices": 1,
+    "n_devices": 2,
 }
 
 task_cfg = {
     # "classify": True,
-    "learning_rate": 8e-5,
+    "learning_rate": 12e-5,
     "weight_decay": 0.00001,
-    "warmup_steps": 10_000,
+    "warmup_steps": 12_000,
     "decay_steps": 100_000,
     "decay": 0.999988,
     "balance_classes": False,
@@ -51,7 +51,7 @@ model_cfg = {
     "seq_dim": 512,
     "query_len": 64,
     "query_dim": 512,
-    "n_layers": 12,
+    "n_layers": 10,
     "dim_feedforward": 1024,
     "n_heads": 2,
     "dropout": 0.0,
