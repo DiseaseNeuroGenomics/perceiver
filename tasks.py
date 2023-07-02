@@ -38,11 +38,11 @@ class MSELoss(pl.LightningModule):
                 else:
                     # continuous variable
                     self.cell_prop_mse[k] = nn.MSELoss()
-                    self.cell_prop_explained_var = ExplainedVariance()
+                    self.cell_prop_explained_var[k] = ExplainedVariance()
         else:
             self.cell_prop_cross_ent = self.cell_prop_accuracy = self.cell_prop_mse = self.cell_prop_explained_var = None
 
-        self.explained_var = ExplainedVariance()
+        self.gene_explained_var = ExplainedVariance()
         self.metrics = MetricCollection([ExplainedVariance()])
         self.train_metrics = self.metrics.clone(prefix="train_")
         self.val_metrics = self.metrics.clone(prefix="val_")
@@ -100,7 +100,7 @@ class MSELoss(pl.LightningModule):
             gene_ids, gene_target_ids, cell_prop_ids, gene_vals, key_padding_mask,
         )
 
-        self.explained_var(gene_pred, gene_targets.unsqueeze(2))
+        self.gene_explained_var(gene_pred, gene_targets.unsqueeze(2))
 
         if self.network.cell_properties is not None:
             for n, (k, v) in enumerate(self.network.cell_properties.items()):
@@ -108,7 +108,7 @@ class MSELoss(pl.LightningModule):
                     predict_idx = torch.argmax(cell_prop_pred[k], dim=-1)
                     # property values of -1 will be masked out
                     idx = torch.where(cell_prop_targets[:, n] >= 0)[0]
-                    self.cell_prop_accuracy[k](
+                    self.cell_prop_accuracy[k].update(
                         predict_idx[idx], cell_prop_targets[idx, n]
                     )
                     self.results[k].append(cell_prop_targets[:, n].detach().cpu().numpy())
@@ -116,20 +116,19 @@ class MSELoss(pl.LightningModule):
                 elif k in self.cell_prop_mse.keys():
                     # property values < -999  will be masked out
                     idx = torch.where(cell_prop_targets[:, n] > - 999)[0]
-                    self.cell_prop_explained_var[k](
+                    self.cell_prop_explained_var[k].update(
                         cell_prop_pred[k][idx], cell_prop_targets[idx, n]
                     )
                     self.results[k].append(cell_prop_targets[:, n].detach().cpu().numpy())
                     self.results["pred_" + k].append(cell_prop_pred[k][idx].detach().cpu().to(torch.float32).numpy())
 
-        self.log("gene_ex", self.explained_var, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("gene_ex", self.gene_explained_var, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
 
         for k, v in self.cell_prop_accuracy.items():
             self.log(k, v, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         for k, v in self.cell_prop_explained_var.items():
             self.log(k, v, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
 
-        return loss
 
     def on_validation_epoch_end(self):
 
