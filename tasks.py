@@ -73,7 +73,7 @@ class MSELoss(pl.LightningModule):
                     cross_entropy = self.cross_ent[k].to(device=cell_prop_pred[k].device)
                     # class values of -1 will be masked out
                     idx = torch.where(cell_prop_targets[:, n] >= 0)[0]
-                    cell_prop_loss += cross_entropy(cell_prop_pred[k][idx], cell_prop_targets[idx, n])
+                    cell_prop_loss += cross_entropy(cell_prop_pred[k][idx], cell_prop_targets[idx, n].to(torch.int64))
                 elif k in self.cell_prop_mse.keys():
                     mse = self.cell_prop_mse[k].to(device=cell_prop_pred[k].device)
                     # class values less than -999 or greater than 999 will be masked out
