@@ -64,7 +64,7 @@ class MSELoss(pl.LightningModule):
             gene_ids, gene_target_ids, cell_prop_ids, gene_vals, key_padding_mask,
         )
 
-        mse_loss = self.mse(gene_pred, gene_targets.unsqueeze(2))
+        gene_loss = self.mse(gene_pred, gene_targets.unsqueeze(2))
         cell_prop_loss = 0
 
         if self.network.cell_properties is not None:
@@ -83,9 +83,10 @@ class MSELoss(pl.LightningModule):
         # TODO: fit this
         alpha = 1.0
         beta = 1.0
-        loss = alpha * mse_loss + beta * cell_prop_loss
+        loss = alpha * gene_loss + beta * cell_prop_loss
 
-        self.log("loss", loss, on_step=True, on_epoch=True, prog_bar=True)
+        self.log("gene_loss", gene_loss, on_step=True, on_epoch=True, prog_bar=True)
+        self.log("cell_loss", cell_prop_loss, on_step=True, on_epoch=True, prog_bar=True)
         return loss
 
 
