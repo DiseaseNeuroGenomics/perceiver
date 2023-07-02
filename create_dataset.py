@@ -142,7 +142,7 @@ class CreateData:
                 gene_expression.append(np.mean(x > 0, axis=0))
 
             gene_expression = np.mean(np.stack(gene_expression), axis=0)
-            self.gene_idx = np.where(gene_expression >= self.gene_min_pct_threshold)[0]
+            self.gene_idx = np.where(gene_expression >= self.min_percent_cells_per_gene)[0]
 
         print(f"Number of genes selected: {len(self.gene_idx)}")
 
