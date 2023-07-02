@@ -85,7 +85,7 @@ class SingleCellDataset(Dataset):
 
                 if v is None:
                     # cell property with continuous value
-                    cell_vals = self.metadata["obs"][k].values
+                    cell_vals = self.metadata["obs"][k]
                     # remove nans, negative values, or anything else suspicious
                     idx = [n for n, cv in cell_vals if cv >= 0 and cv < 9999]
                     self.cell_prop_dist[k] = {
@@ -94,7 +94,7 @@ class SingleCellDataset(Dataset):
                     }
                 else:
                     # cell property with categroical value
-                    unique_list, counts = np.unique(self.metadata["obs"][k].values, return_counts=True)
+                    unique_list, counts = np.unique(self.metadata["obs"][k], return_counts=True)
                     # remove nans, negative values, or anything else suspicious
                     idx = [n for n, u in enumerate(unique_list) if u in v]
                     counts = counts[idx]
