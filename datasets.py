@@ -19,10 +19,12 @@ class SingleCellDataset(Dataset):
         self,
         data_path: str,
         metadata_path: str,
-        predict_classes: Optional[List[str]] = None,
+        cell_properties: Optional[Dict[str, Any]] = None,
         n_mask: int = 100,
         batch_size: int = 32,
-        rank_order: bool = True,
+        normalize_total: Optional[float] = 10_000,
+        log_normalize: bool = True,
+        rank_order: bool = False,
         scale_by_max: bool = False,
         pin_memory: bool = False,
         same_latent_class: bool = True,
@@ -30,74 +32,101 @@ class SingleCellDataset(Dataset):
 
         self.metadata = pickle.load(open(metadata_path, "rb"))
         self.data_path = data_path
-        self.cells_per_epochs = cells_per_epochs
-        self.predict_classes = predict_classes
+        self.cell_properties = cell_properties
         self.n_samples = len(self.metadata["obs"]["class"])
         self.n_genes = len(self.metadata["var"])
-        self.n_classes = len(predict_classes) if predict_classes is not None else 0
+        self.n_cell_properties = len(cell_properties) if cell_properties is not None else 0
         self.n_mask = n_mask
         self.batch_size = batch_size
+        if rank_order:
+            print("Since rank_oder=True, setting normalize_total to None and log_normalize to False")
+            normalize_total = None
+            log_normalize = False
+        if normalize_total or log_normalize:
+            print("Since log_normalize or normalize_total=True, setting rank_order and scale_by_max  to False")
+            scale_by_max = False
+            log_normalize = False
+
+        self.normalize_total = normalize_total
+        self.log_normalize = log_normalize
         self.rank_order = rank_order
         self.scale_by_max = scale_by_max
         self.pin_memory = pin_memory
         self.same_latent_class = same_latent_class
 
         self.offset = 2 * self.n_genes  # FP16 is 2 bytes
-        self._get_class_info()
-        self._create_gene_class_ids()
+        self._get_cell_prop_info()
+        self._create_gene_cell_prop_ids()
 
 
     def __len__(self):
         return self.n_samples
 
-    def _create_gene_class_ids(self):
+    def _create_gene_cell_prop_ids(self):
         """"Create the gene and class ids. Will start with the gene ids, and then concatenate
-        the class ids if requested"""
+        the cell property ids if requested"""
         gene_ids = torch.arange(0, self.n_genes).repeat(self.batch_size, 1)
-        if self.n_classes > 0:
+        if self.n_cell_properties > 0:
             if self.same_latent_class:
                 # this will project all the class related latent info onto the same subspace, simplifying analysis
-                class_ids = torch.zeros((self.batch_size, self.n_classes), dtype=torch.int64)
+                cell_prop_ids = torch.zeros((self.batch_size, self.n_cell_properties), dtype=torch.int64)
             else:
-                class_ids = torch.arange(0, self.n_classes).repeat(self.batch_size, 1)
+                cell_prop_ids = torch.arange(0, self.n_cell_properties).repeat(self.batch_size, 1)
         else:
-            class_ids = None
+            cell_prop_ids = None
 
-        return gene_ids, class_ids
+        return gene_ids, cell_prop_ids
 
-    def _get_class_info(self):
-        """Extract the list of uniques values for each class (e.g. sex, cell type, etc.) to be predicted"""
-        if self.predict_classes is not None:
-            self.class_unique = {}
-            self.class_dist = {}
-            for k in self.predict_classes:
-                unique_list, counts = np.unique(self.metadata["obs"][k], return_counts=True)
-                # remove nans, negative values, or anything else suspicious
-                if k == "ApoE_gt":
-                    idx = [n for n, u in enumerate(unique_list) if u in [23, 24, 33, 34, 44]]
+    def _get_cell_prop_info(self):
+        """Extract the list of uniques values for each cell property (e.g. sex, cell type, etc.) to be predicted"""
+        if self.n_cell_properties > 0:
+            self.cell_prop_dist = {}
+            for k, v in self.cell_properties.items():
+
+                if v is None:
+                    # cell property with continuous value
+                    cell_vals = self.metadata["obs"][k].values
+                    # remove nans, negative values, or anything else suspicious
+                    idx = [n for n, cv in cell_vals if cv >= 0 and cv < 9999]
+                    self.cell_prop_dist[k] = {
+                        "mean": np.mean(cell_vals[idx]),
+                        "std": np.std(cell_vals[idx]),
+                    }
                 else:
-                    idx = [n for n, u in enumerate(unique_list) if isinstance(u, str) or (u >= 0 and u <= 999)]
-                unique_list = unique_list[idx]
-                counts = counts[idx]
-                self.class_unique[k] = np.array(unique_list)
-                self.class_dist[k] = counts / np.max(counts)
-                print("class info", k, self.class_unique[k], self.class_dist[k])
+                    # cell property with categroical value
+                    unique_list, counts = np.unique(self.metadata["obs"][k].values, return_counts=True)
+                    # remove nans, negative values, or anything else suspicious
+                    idx = [n for n, u in enumerate(unique_list) if u in v]
+                    counts = counts[idx]
+                    self.cell_prop_dist[k] = counts / np.max(counts)
+                print("Cell property info", k, self.cell_prop_dist[k])
         else:
-            self.class_unique = self.class_dist = None
+            self.cell_prop_dist = None
 
-    def _get_class_vals(self, batch_idx: List[int]):
-        """Extract the class value for ach entry in the batch"""
-        if self.class_unique is None:
+    def _get_cell_prop_vals(self, batch_idx: List[int]):
+        """Extract the cell property value for ach entry in the batch"""
+        if self.n_cell_properties == 0:
             return None
 
-        class_vals = np.zeros((self.batch_size, self.n_classes), dtype=np.int64)
+        cell_prop_vals = np.zeros((self.batch_size, self.n_cell_properties), dtype=np.float32)
         for n0, i in enumerate(batch_idx):
-            for n1, (k, v) in enumerate(self.class_unique.items()):
-                idx = np.where(self.metadata["obs"][k][i] == v)[0]
-                # class values of -1 will imply N/A, and will be masked out
-                class_vals[n0, n1] = -1 if len(idx) == 0 else idx[0]
+            for n1, (k, v) in enumerate(self.cell_properties.items()):
+                if v is None:
+                    # continuous value
+                    cell_val = self.metadata["obs"][k][i]
+                    if cell_val < 0 or cell_val > 9999:
+                        cell_prop_vals[n0, n1] = -9999
+                    else:
+                        cell_prop_vals[n0, n1] = (
+                            cell_val - self.cell_prop_dist[k]["mean"]
+                        ) / self.cell_prop_dist[k]["std"]
+                else:
+                    # categorical value
+                    idx = np.where(self.metadata["obs"][k][i] == v)[0]
+                    # cell property values of -1 will imply N/A, and will be masked out
+                    cell_prop_vals[n0, n1] = -1 if len(idx) == 0 else idx[0]
 
-        return torch.from_numpy(class_vals)
+        return torch.from_numpy(cell_prop_vals)
 
     def _get_gene_vals(self, batch_idx: List[int]):
 
@@ -108,28 +137,36 @@ class SingleCellDataset(Dataset):
             ).astype(np.float32)
             if self.scale_by_max:
                 gene_vals[n, :] /= (1e-9 + self.metadata["stats"]["max"])
+            elif self.normalize_total or self.log_normalize:
+                gene_vals[n, :] = self._normalize( gene_vals[n, :])
 
         zero_idx = np.where(gene_vals == 0)
         gene_vals = torch.from_numpy(gene_vals)
         # return two copies since we'll modify gene_vals but keep gene_targets as is
         return gene_vals, gene_vals, zero_idx
 
+    def _normalize(self, x: np.ndarray) -> np.ndarray:
+
+        x = x * self.normalize_total / np.sum(x) if self.normalize_total is not None else x
+        x = np.log1p(x) if self.log_normalize else x
+        return x
+
     def _prepare_data(self, batch_idx):
 
         gene_vals, gene_targets, zero_idx = self._get_gene_vals(batch_idx)
-        class_targets = self._get_class_vals(batch_idx)
+        cell_prop_vals = self._get_cell_prop_vals(batch_idx)
 
         key_padding_mask = torch.zeros_like(gene_vals).detach()
         key_padding_mask[zero_idx[0], zero_idx[1]] = 1.0
 
-        return gene_vals, key_padding_mask, gene_targets, class_targets
+        return gene_vals, key_padding_mask, gene_targets, cell_prop_vals
 
     def __getitem__(self, idx: List[int]):
 
         if len(idx) != self.batch_size:
             raise ValueError("Index length not equal to batch_size")
 
-        gene_vals, key_padding_mask, gene_targets, class_targets = self._prepare_data(idx)
+        gene_vals, key_padding_mask, gene_targets, cell_prop_vals = self._prepare_data(idx)
 
         # mask indices
         mask_col_ids = []
@@ -142,22 +179,15 @@ class SingleCellDataset(Dataset):
             for j in mask_idx:
                 mask_row_ids.append(i)
                 mask_col_ids.append(j)
-        """
-        rnd_idx = np.concatenate(rnd_idx, axis=-1)
-        mask_col_ids = torch.tensor(rnd_idx).long()
-        mask_row_ids = torch.repeat_interleave(
-            torch.arange(0, self.batch_size), self.n_mask
-        ).long()
-        """
 
         assert len(mask_col_ids) == len(mask_row_ids)
 
         # the genes to predict will be masked out in the input
         gene_targets = gene_targets[mask_row_ids, mask_col_ids].reshape(self.batch_size, -1)
 
-        gene_ids, class_ids = self._create_gene_class_ids()
+        gene_ids, cell_prop_ids = self._create_gene_cell_prop_ids()
 
-        # target ids are the genes that are masked out plus the classes to predict
+        # target ids are the genes that are masked out plus the cell properties to predict
         gene_target_ids = gene_ids[mask_row_ids, mask_col_ids].reshape(self.batch_size, -1)
 
         #if not self.rank_order:
@@ -171,7 +201,7 @@ class SingleCellDataset(Dataset):
             gene_ids[i, zero_idx] = self.n_genes
             gene_vals[i, zero_idx] = 0.0 #  should already be zero...just to be safe
 
-        batch = gene_ids, gene_target_ids, class_ids, gene_vals, gene_targets, key_padding_mask, class_targets
+        batch = gene_ids, gene_target_ids, cell_prop_ids, gene_vals, gene_targets, key_padding_mask, cell_prop_vals
 
         if self.pin_memory:
             for tensor in batch:

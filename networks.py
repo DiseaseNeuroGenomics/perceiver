@@ -3,7 +3,7 @@
 # other possible data from: https://figshare.com/articles/dataset/Tabula_Sapiens_release_1_0/14267219
 # other public covid data: https://onlinelibrary.wiley.com/doi/10.1002/ctd2.104
 
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 import torch
 from torch import nn
 
@@ -95,13 +95,12 @@ class Exceiver(nn.Module):
         n_layers: int,
         n_heads: int,
         dim_feedforward: int,
-        class_dist: Optional[Dict[str, float]] = None,
+        cell_properties: Optional[Dict[str, Any]] = None,
         dropout: float = 0.0,  # for the process attention module
         rank_order: bool = False,
         **kwargs,
     ):
 
-        # Initialize superclass
         super().__init__()
 
         self.seq_len = seq_len
@@ -112,7 +111,7 @@ class Exceiver(nn.Module):
         self._create_gene_embeddings()
 
         # Embeddings and attention blocks
-        self.n_classes = len(class_dist) if class_dist is not None else 0
+        self.n_cell_props = len(cell_properties) if cell_properties is not None else 0
 
         # self.output_emb = nn.Embedding(seq_len + 1, seq_dim, padding_idx=seq_len)
         self.query_emb = nn.Parameter(torch.randn(query_len, query_dim))
@@ -130,14 +129,13 @@ class Exceiver(nn.Module):
             nn.LayerNorm(seq_dim), nn.Linear(seq_dim, 1)
         )
 
-        self.class_dist = class_dist
-        if self.n_classes > 0:
-            self.class_emb = nn.Embedding(self.n_classes + 1, seq_dim, padding_idx=self.n_classes)
-            self.class_mlp = nn.ModuleDict(
-                {k: nn.Sequential(nn.LayerNorm(seq_dim), nn.Linear(seq_dim, len(v))
-                    ) for k, v in class_dist.items()
-                }
-            )
+        self.cell_properties = cell_properties
+        if self.n_cell_props > 0:
+            self.cell_prop_emb = nn.Embedding(self.n_cell_props + 1, seq_dim, padding_idx=self.n_cell_props)
+            self.cell_prop_mlp = nn.ModuleDict()
+            for k, v in cell_properties.items():
+                n_targets = 1 if v is None else len(v)
+                self.cell_prop_mlp[k] = nn.Sequential(nn.LayerNorm(seq_dim), nn.Linear(seq_dim, n_targets))
 
     def encoder_attn_step(
         self,
@@ -184,14 +182,14 @@ class Exceiver(nn.Module):
         self,
         gene_ids: torch.Tensor,
         gene_target_ids: torch.Tensor,
-        class_target_ids: torch.Tensor,
+        cell_prop_target_ids: torch.Tensor,
         gene_vals: torch.Tensor,
         key_padding_mask: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
 
         input_query = self.query_emb.repeat(len(gene_ids), 1, 1)
 
-        class_target_query = self.class_emb(class_target_ids)
+        cell_prop_target_query = self.cell_prop_emb_emb(cell_prop_target_ids)
 
         key_vals = self._gene_embedding(gene_ids, gene_vals)
         gene_target_query = self._gene_embedding(gene_target_ids)
@@ -202,10 +200,10 @@ class Exceiver(nn.Module):
         )
         latent = self.process_self_attn(latent)
 
-        # Query genes and classes
-        # Decoder out will contain the latent for both genes and classes, concatenated together
+        # Query genes and cell properties
+        # Decoder out will contain the latent for both genes and cell properties, concatenated together
         decoder_out, decoder_weights = self.decoder_cross_attn(
-            torch.cat((gene_target_query, class_target_query), dim=1),
+            torch.cat((gene_target_query, cell_prop_target_query), dim=1),
             latent,
             key_padding_mask=None,
         )
@@ -214,15 +212,15 @@ class Exceiver(nn.Module):
         n_genes = gene_target_query.size(1)
         gene_pred = self.gene_mlp(decoder_out[:, : n_genes, :])
 
-        # Predict classes
-        if self.n_classes > 0:
-            class_pred = {}
-            for n, k in enumerate(self.class_mlp.keys()):
-                class_pred[k] = self.class_mlp[k](decoder_out[:, n_genes + n, :])
+        # Predict cell properties
+        if self.n_cell_props > 0:
+            cell_prop_pred = {}
+            for n, k in enumerate(self.cell_prop_mlp.keys()):
+                cell_prop_pred[k] = self.cell_prop_mlp_mlp[k](decoder_out[:, n_genes + n, :])
         else:
-            class_pred = None
+            cell_prop_pred = None
 
-        return gene_pred, class_pred, latent
+        return gene_pred, cell_prop_pred, latent
 
 
 def extract_state_dict(model_save_path, device):

@@ -44,7 +44,7 @@ def main():
         precision=trainer_cfg["precision"],
         strategy=DDPStrategy(find_unused_parameters=True) if trainer_cfg["n_devices"] > 1 else "auto",
         limit_train_batches=4000,
-        limit_val_batches-400,
+        limit_val_batches=400,
 
     )
 

@@ -1,3 +1,18 @@
+
+"""List of cell properties to predict, with values indicating (possibly restricted) list of target outputs.
+None indicates continuous vales"""
+cell_properties = {
+    "AD": [0, 1],
+    "Dementia": [0, 1],
+    "CERAD": [1, 2, 3, 4],
+    "BRAAK_AD": [0, 1, 2, 3, 4, 5, 6],
+    "ApoE_gt": [23, 24, 33, 34, 44],
+    "Age": None,
+    "PMI": None,
+    "class": ['Astro' 'EN' 'Endo' 'IN' 'Immune' 'Mural' 'OPC' 'Oligo'],
+}
+
+
 dataset_cfg = {
     #"train_data_path": "/ssd/mssm_data/train_data.dat",
     #"train_metadata_path": "/ssd/mssm_data/train_metadata.pkl",
@@ -7,7 +22,7 @@ dataset_cfg = {
     "train_metadata_path": "/sc/arion/projects/psychAD/massen06/mssm_data/train_metadata.pkl",
     "test_data_path": "/sc/arion/projects/psychAD/massen06/rush_data/train_data.dat",
     "test_metadata_path": "/sc/arion/projects/psychAD/massen06/rush_data/train_metadata.pkl",
-    "predict_classes": ["AD", "ApoE_gt", "BRAAK_AD", "CERAD", "class", "Dementia"],
+    "predict_classes": cell_properties,
     "batch_size": 128,
     "num_workers": 6,
     "n_mask": 100,
@@ -28,6 +43,7 @@ task_cfg = {
     "warmup_steps": 10_000,
     "decay_steps": 100_000,
     "decay": 0.999988,
+    "balance_classes": False,
 
 }
 
