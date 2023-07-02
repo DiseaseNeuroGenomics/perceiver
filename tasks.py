@@ -77,7 +77,7 @@ class MSELoss(pl.LightningModule):
                 elif k in self.cell_prop_mse.keys():
                     mse = self.cell_prop_mse[k].to(device=cell_prop_pred[k].device)
                     # class values less than -999 or greater than 999 will be masked out
-                    idx = torch.where(cell_prop_targets[:, n] > -999))[0]
+                    idx = torch.where(cell_prop_targets[:, n] > -999)[0]
                     cell_prop_loss += mse(cell_prop_pred[k][idx], cell_prop_targets[idx, n])
 
         # TODO: fit this
