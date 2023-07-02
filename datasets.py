@@ -86,9 +86,8 @@ class SingleCellDataset(Dataset):
                 if v is None:
                     # cell property with continuous value
                     cell_vals = self.metadata["obs"][k]
-                    print(k, cell_vals)
                     # remove nans, negative values, or anything else suspicious
-                    idx = [n for n, cv in cell_vals if cv >= 0 and cv < 9999]
+                    idx = [n for n, cv in enumerate(cell_vals) if cv >= 0 and cv < 9999]
                     self.cell_prop_dist[k] = {
                         "mean": np.mean(cell_vals[idx]),
                         "std": np.std(cell_vals[idx]),
