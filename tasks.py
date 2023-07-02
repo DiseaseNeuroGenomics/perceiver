@@ -99,8 +99,8 @@ class MSELoss(pl.LightningModule):
         gene_pred, cell_prop_pred, latent = self.network.forward(
             gene_ids, gene_target_ids, cell_prop_ids, gene_vals, key_padding_mask,
         )
-        loss = self.mse(gene_pred, gene_targets.unsqueeze(2))
-        ev = self.explained_var(gene_pred, gene_targets.unsqueeze(2))
+
+        self.explained_var(gene_pred, gene_targets.unsqueeze(2))
 
         if self.network.cell_properties is not None:
             for n, (k, v) in enumerate(self.network.cell_properties.items()):
@@ -122,9 +122,9 @@ class MSELoss(pl.LightningModule):
                     self.results[k].append(cell_prop_targets[:, n].detach().cpu().numpy())
                     self.results["pred_" + k].append(cell_prop_pred[k][idx].detach().cpu().to(torch.float32).numpy())
 
-        self.log("gene_ex", ev, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("gene_ex", self.explained_var, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
 
-        for k, v in cell_prop_acc.items():
+        for k, v in self.cell_prop_accuracy.items():
             self.log(k, v, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         for k, v in self.cell_prop_explained_var.items():
             self.log(k, v, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
