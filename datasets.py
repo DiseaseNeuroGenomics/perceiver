@@ -44,9 +44,9 @@ class SingleCellDataset(Dataset):
             normalize_total = None
             log_normalize = False
         if normalize_total or log_normalize:
-            print("Since log_normalize or normalize_total=True, setting rank_order and scale_by_max  to False")
+            print("Since log_normalize or normalize_total=True, setting rank_order and scale_by_max to False")
             scale_by_max = False
-            log_normalize = False
+            rank_order = False
 
         self.normalize_total = normalize_total
         self.log_normalize = log_normalize
