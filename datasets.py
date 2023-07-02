@@ -34,6 +34,7 @@ class SingleCellDataset(Dataset):
         self.data_path = data_path
         self.cell_properties = cell_properties
         self.n_samples = len(self.metadata["obs"]["class"])
+        print(f"Number of cells {self.n_samples}")
         self.n_genes = len(self.metadata["var"])
         self.n_cell_properties = len(cell_properties) if cell_properties is not None else 0
         self.n_mask = n_mask

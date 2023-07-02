@@ -159,8 +159,8 @@ class Exceiver(nn.Module):
             self.gene_emb_low.weight.data = 0.1 * self.gene_emb_low.weight.data + 0.9 * self.gene_emb_high.weight.data
         else:
             self.gene_emb = nn.Embedding(self.seq_len + 1, self.seq_dim, padding_idx=self.seq_len)
-            self.gene_val_w = nn.Parameter(torch.ones(1, self.seq_len - 1))
-            self.gene_val_b = nn.Parameter(torch.zeros(1, self.seq_len - 1))
+            self.gene_val_w = nn.Parameter(torch.ones(1, self.seq_len))
+            self.gene_val_b = nn.Parameter(torch.zeros(1, self.seq_len))
 
     def _gene_embedding(self, gene_ids: torch.Tensor, gene_vals: Optional[torch.Tensor] = None) -> torch.Tensor:
 
@@ -216,7 +216,7 @@ class Exceiver(nn.Module):
         if self.n_cell_props > 0:
             cell_prop_pred = {}
             for n, k in enumerate(self.cell_prop_mlp.keys()):
-                cell_prop_pred[k] = self.cell_prop_mlp_mlp[k](decoder_out[:, n_genes + n, :])
+                cell_prop_pred[k] = self.cell_prop_mlp[k](decoder_out[:, n_genes + n, :])
         else:
             cell_prop_pred = None
 

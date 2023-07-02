@@ -117,7 +117,7 @@ class MSELoss(pl.LightningModule):
                     idx = torch.where(cell_prop_targets[:, n] > - 999)[0]
                     cell_prop_explained_var[k] = metric(cell_prop_pred[k][idx], cell_prop_targets[idx, n])
                     self.results[k].append(cell_prop_targets[:, n].detach().cpu().numpy())
-                    self.results["pred_" + k].append(cell_prop_pred[k][idx].detach().cpu().numpy())
+                    self.results["pred_" + k].append(cell_prop_pred[k][idx].detach().cpu().to(torch.float32).numpy())
 
         self.log("gene_ex", ev, on_step=False, on_epoch=True, prog_bar=True)
 
