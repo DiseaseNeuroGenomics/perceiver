@@ -189,7 +189,7 @@ class Exceiver(nn.Module):
 
         input_query = self.query_emb.repeat(len(gene_ids), 1, 1)
 
-        cell_prop_target_query = self.cell_prop_emb_emb(cell_prop_target_ids)
+        cell_prop_target_query = self.cell_prop_emb(cell_prop_target_ids)
 
         key_vals = self._gene_embedding(gene_ids, gene_vals)
         gene_target_query = self._gene_embedding(gene_target_ids)

@@ -26,7 +26,7 @@ dataset_cfg = {
     "batch_size": 128,
     "num_workers": 6,
     "n_mask": 100,
-    "rank_order": True,
+    "rank_order": False,
 }
 
 trainer_cfg = {
