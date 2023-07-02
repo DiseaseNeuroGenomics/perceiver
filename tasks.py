@@ -24,16 +24,16 @@ class MSELoss(pl.LightningModule):
         # Functions and metrics
         self.mse = nn.MSELoss()
         if self.cell_properties is not None:
-            self.cross_ent = {}
+            self.cell_prop_cross_ent = {}
             self.cell_prop_mse = {}
-            self.accuracy = {}
+            self.cell_prop_accuracy = {}
             self.cell_prop_explained_var = {}
 
             for k, v in self.network.cell_properties.items():
                 if v is not None:
                     # categorical variable
                     weight = torch.from_numpy(np.float32(1 / v)) if task_cfg["balance_classes"] else None
-                    self.cell_prop_cross_ent[k] = nn.CrossEntropyLoss(eight=weight)
+                    self.cell_prop_cross_ent[k] = nn.CrossEntropyLoss(weight=weight)
                     self.cell_prop_accuracy[k] = Accuracy(task="multiclass", num_classes=len(v), average="macro")
                 else:
                     # continuous variable
