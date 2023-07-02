@@ -123,7 +123,7 @@ class SingleCellDataset(Dataset):
                         ) / self.cell_prop_dist[k]["std"]
                 else:
                     # categorical value
-                    idx = np.where(self.metadata["obs"][k][i] == v)[0]
+                    idx = np.where(self.metadata["obs"][k][i] == np.array(v))[0]
                     # cell property values of -1 will imply N/A, and will be masked out
                     cell_prop_vals[n0, n1] = -1 if len(idx) == 0 else idx[0]
 

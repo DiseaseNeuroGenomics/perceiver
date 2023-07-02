@@ -216,8 +216,8 @@ class Exceiver(nn.Module):
         if self.n_cell_props > 0:
             cell_prop_pred = {}
             for n, k in enumerate(self.cell_prop_mlp.keys()):
-                cell_prop_pred[k] = self.cell_prop_mlp[k](decoder_out[:, n_genes + n, :])
-                print("SIZE OF CELL PROP PRED", cell_prop_pred[k].size())
+                cell_prop_pred[k] = torch.squeeze(self.cell_prop_mlp[k](decoder_out[:, n_genes + n, :]))
+
         else:
             cell_prop_pred = None
 

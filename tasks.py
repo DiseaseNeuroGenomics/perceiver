@@ -70,10 +70,10 @@ class MSELoss(pl.LightningModule):
         if self.network.cell_properties is not None:
             for n, (k, v) in enumerate(self.network.cell_properties.items()):
                 if k in self.cell_prop_cross_ent.keys():
-                    cross_entropy = self.cross_ent[k].to(device=cell_prop_pred[k].device)
+                    cross_ent = self.cell_prop_cross_ent[k].to(device=cell_prop_pred[k].device)
                     # class values of -1 will be masked out
                     idx = torch.where(cell_prop_targets[:, n] >= 0)[0]
-                    cell_prop_loss += cross_entropy(cell_prop_pred[k][idx], cell_prop_targets[idx, n].to(torch.int64))
+                    cell_prop_loss += cross_ent(cell_prop_pred[k][idx], cell_prop_targets[idx, n].to(torch.int64))
                 elif k in self.cell_prop_mse.keys():
                     mse = self.cell_prop_mse[k].to(device=cell_prop_pred[k].device)
                     # class values less than -999 or greater than 999 will be masked out
@@ -132,14 +132,14 @@ class MSELoss(pl.LightningModule):
 
         v = self.trainer.logger.version
         fn = f"{self.trainer.log_dir}/lightning_logs/version_{v}/test_results.pkl"
-        for k in self.network.class_dist.keys():
+        for k in self.network.cell_properties.keys():
             self.results[k] = np.stack(self.results[k])
             self.results["pred_" + k] = np.stack(self.results["pred_" + k])
 
         pickle.dump(self.results, open(fn, "wb"))
 
         self.results["epoch"] = self.current_epoch + 1
-        for k in self.network.class_dist.keys():
+        for k in self.network.cell_properties.keys():
             self.results[k] = []
             self.results["pred_" + k] = []
 
