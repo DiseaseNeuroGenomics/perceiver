@@ -108,7 +108,7 @@ class MSELoss(pl.LightningModule):
                     metric = self.cell_prop_accuracy[k].to(device=cell_prop_pred[k].device)
                     # property values of -1 will be masked out
                     idx = torch.where(cell_prop_targets[:, n] >= 0)[0]
-                    cell_prop_acc[k] = metric(cell_prop_pred[k][idx], cell_prop_targets[idx, n])
+                    cell_prop_acc[k] = metric(predict_idx[idx], cell_prop_targets[idx, n])
                     self.results[k].append(cell_prop_targets[:, n].detach().cpu().numpy())
                     self.results["pred_" + k].append(predict_idx.detach().cpu().numpy())
                 elif k in self.cell_prop_mse.keys():
