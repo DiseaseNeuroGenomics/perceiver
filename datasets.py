@@ -328,7 +328,7 @@ class DataModule(pl.LightningDataModule):
         num_workers: int = 16,
         n_mask: int = 100,
         rank_order: bool = False,
-        predict_classes: Optional[Dict[str, int]] = None,
+        cell_properties: Optional[Dict[str, Any]] = None,
 
     ):
         super().__init__()
@@ -340,14 +340,14 @@ class DataModule(pl.LightningDataModule):
         self.num_workers = num_workers
         self.n_mask = n_mask
         self.rank_order = rank_order
-        self.predict_classes = predict_classes
+        self.cell_properties = cell_properties
 
     def setup(self, stage):
 
         self.train_dataset = SingleCellDataset(
             self.train_data_path,
             self.train_metadata_path,
-            predict_classes=self.predict_classes,
+            cell_properties=self.cell_properties,
             n_mask=self.n_mask,
             batch_size=self.batch_size,
             rank_order=self.rank_order,
@@ -356,7 +356,7 @@ class DataModule(pl.LightningDataModule):
         self.val_dataset = SingleCellDataset(
             self.test_data_path,
             self.test_metadata_path,
-            predict_classes=self.predict_classes,
+            cell_properties=self.cell_properties,
             n_mask=self.n_mask,
             batch_size=self.batch_size,
             rank_order=self.rank_order,
@@ -415,7 +415,7 @@ class DataModuleAnndata(pl.LightningDataModule):
         n_min_mask: int = 1,
         n_max_mask: int = 100,
         rank_order: bool = False,
-        predict_classes: Optional[List[str]] = None,
+        cell_properties: Optional[Dict[str, Any]] = None,
         gene_min_pct_threshold: float = 0.02,
         min_genes_per_cell: int = 1000,
         train_pct: float = 0.9,
@@ -428,7 +428,7 @@ class DataModuleAnndata(pl.LightningDataModule):
         self.n_min_mask = n_min_mask
         self.n_max_mask = n_max_mask
         self.rank_order = rank_order
-        self.predict_classes = predict_classes
+        self.cell_properties = cell_properties
         self.gene_min_pct_threshold = gene_min_pct_threshold
         self.min_genes_per_cell = min_genes_per_cell
         self.train_pct = train_pct
@@ -443,7 +443,7 @@ class DataModuleAnndata(pl.LightningDataModule):
             self.train_idx,
             self.gene_idx,
             128 * 2000,
-            predict_classes=self.predict_classes,
+            cell_properties=self.cell_properties,
             n_min_mask=self.n_min_mask,
             n_max_mask=self.n_max_mask,
             batch_size=self.batch_size,
@@ -455,7 +455,7 @@ class DataModuleAnndata(pl.LightningDataModule):
             self.test_idx,
             self.gene_idx,
             128 * 100,
-            predict_classes=self.predict_classes,
+            cell_properties=self.cell_properties,
             n_min_mask=self.n_min_mask,
             n_max_mask=self.n_max_mask,
             batch_size=self.batch_size,
