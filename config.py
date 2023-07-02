@@ -9,7 +9,7 @@ cell_properties = {
     "ApoE_gt": [23, 24, 33, 34, 44],
     "Age": None,
     "PMI": None,
-    "class": ['Astro' 'EN' 'Endo' 'IN' 'Immune' 'Mural' 'OPC' 'Oligo'],
+    "class": ['Astro', 'EN', 'Endo', 'IN', 'Immune', 'Mural', 'OPC', 'Oligo'],
 }
 
 
