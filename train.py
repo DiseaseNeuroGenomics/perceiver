@@ -23,7 +23,7 @@ def check_train_test_set(cfg):
     train_test_inter = train_ids.intersection(test_ids)
     print(f"Number of train users in test set: {len(train_test_inter)}")
 
-def main(adverserial: bool=True):
+def main(adverserial: bool = True):
 
     # Set seed
     pl.seed_everything(2299)
@@ -48,20 +48,19 @@ def main(adverserial: bool=True):
     else:
         task = MSELoss(network=model, task_cfg=task_cfg)
 
-
     trainer = pl.Trainer(
         enable_checkpointing=True,
         accelerator='gpu',
         devices=trainer_cfg["n_devices"],
-        max_epochs=1000,
+        max_epochs=100,
         gradient_clip_val=trainer_cfg["grad_clip_value"] if not adverserial else None,
         accumulate_grad_batches=trainer_cfg["accumulate_grad_batches"],
         precision=trainer_cfg["precision"],
         strategy=DDPStrategy(find_unused_parameters=True) if trainer_cfg["n_devices"] > 1 else "auto",
-        limit_train_batches=400,
-        limit_val_batches=400,
-
+        limit_train_batches=40,
+        limit_val_batches=40,
     )
+
 
     trainer.fit(task, dm)
 
