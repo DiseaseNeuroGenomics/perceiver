@@ -18,10 +18,11 @@ class CreateData:
         target_path: str,
         train_pct: float = 0.9,
         rank_order: bool = False,
-        normalize_total: Optional[float] = 1e4,
-        log_normalize: bool = True,
+        normalize_total: Optional[float] = None,
+        log_normalize: bool = False,
         min_genes_per_cell: int = 1000,
         min_percent_cells_per_gene: float = 0.02,
+        split_train_test_by_subject: bool = True,
     ):
         self.source_fn = source_fn
         self.target_path = target_path
@@ -35,9 +36,13 @@ class CreateData:
         self.log_normalize = log_normalize
         self.min_genes_per_cell = min_genes_per_cell
         self.min_percent_cells_per_gene = min_percent_cells_per_gene
+        self.split_train_test_by_subject = split_train_test_by_subject
 
-        self.obs_keys = ['CERAD', 'BRAAK_AD', 'Dementia', 'AD', 'class', 'subclass', 'subtype', 'ApoE_gt', 'Sex',
-                        'Head_Injury', 'Vascular', 'Age', 'Epilepsy', 'Seizures', 'Tumor']
+        self.obs_keys = [
+            'CERAD', 'BRAAK_AD', 'Dementia', 'AD', 'class', 'subclass', 'subtype', 'ApoE_gt',
+            'Sex', 'Head_Injury', 'Vascular', 'Age', 'Epilepsy', 'Seizures', 'Tumor',
+            'CDRScore', 'PMI', 'Cognitive_Resilience', 'Cognitive_and_Tau_Resilience', 'SubID',
+        ]
         self.var_keys = ['gene_id', 'gene_name', 'gene_type']
 
         self.anndata = sc.read_h5ad(source_fn, 'r')
@@ -50,10 +55,29 @@ class CreateData:
     def _train_test_splits(self):
         # TODO: might want to make split by subjects
 
-        np.random.shuffle(self.cell_idx)
-        n = len(self.cell_idx)
-        self.train_idx = self.cell_idx[: int(n * self.train_pct)]
-        self.test_idx = self.cell_idx[int(n * self.train_pct):]
+        if self.split_train_test_by_subject:
+            sub_ids = np.unique(self.anndata.obs["SubID"].values)
+            np.random.shuffle(sub_ids)
+            n = len(sub_ids)
+            train_ids = sub_ids[: int(n * self.train_pct)]
+            test_ids = sub_ids[int(n * self.train_pct):]
+            self.train_idx = [n for n, s_id in enumerate(self.anndata.obs["SubID"].values) if s_id in train_ids]
+            self.train_idx = [n for n, s_id in enumerate(self.anndata.obs["SubID"].values) if s_id in test_ids]
+            print(
+                f"Splitting the train/test set by SubID. "
+                f"{len(train_ids)} subjects in train set; {len(test_ids)} subjects in test set"
+            )
+        else:
+            np.random.shuffle(self.cell_idx)
+            n = len(self.cell_idx)
+            self.train_idx = self.cell_idx[: int(n * self.train_pct)]
+            self.test_idx = self.cell_idx[int(n * self.train_pct):]
+            print(
+                f"Randomly splitting the train/test. {len(self.train_idx)} cells in train set; "
+                f"{len(self.test_idx)} cells in test set"
+            )
+
+        # sorting for more efficient reading from AnnData (I think ...)
         self.train_idx = np.sort(self.train_idx)
         self.test_idx = np.sort(self.test_idx)
 
@@ -161,7 +185,7 @@ class CreateData:
         chunk_size = 25_000  # chunk size for loading data into memory
         fp = np.memmap(data_fn, dtype='float16', mode='w+', shape=(len(idx), n_genes))
 
-        for n in range(np.ceil(len(idx) / chunk_size)):
+        for n in range(int(np.ceil(len(idx) / chunk_size))):
             m = np.minimum(len(idx), (n + 1) * chunk_size)
             current_idx = idx[n * chunk_size: m]
             print(f"Creating dataset, cell number = {current_idx[0]}")
@@ -205,7 +229,7 @@ if __name__ == "__main__":
 
     source_path = "/sc/arion/projects/psychAD/NPS-AD/freeze2_rc/h5ad_final/FULL_2023-06-08_23_53_original.h5ad"
     target_path = "/sc/arion/projects/psychAD/massen06/perceiver_data"
-    c = CreateData(source_path, target_path, train_pct=0.95, rank_order=True)
+    c = CreateData(source_path, target_path, train_pct=0.9, rank_order=False)
 
     c.create_datasets()
 
