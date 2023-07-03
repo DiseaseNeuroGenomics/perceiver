@@ -28,6 +28,7 @@ class SingleCellDataset(Dataset):
         scale_by_max: bool = False,
         pin_memory: bool = False,
         same_latent_class: bool = True,
+        max_cell_prop_val: float = 999,
     ):
 
         self.metadata = pickle.load(open(metadata_path, "rb"))
@@ -54,6 +55,7 @@ class SingleCellDataset(Dataset):
         self.scale_by_max = scale_by_max
         self.pin_memory = pin_memory
         self.same_latent_class = same_latent_class
+        self.max_cell_prop_val = max_cell_prop_val
 
         self.offset = 2 * self.n_genes  # FP16 is 2 bytes
         self._get_cell_prop_info()
@@ -81,26 +83,35 @@ class SingleCellDataset(Dataset):
     def _get_cell_prop_info(self):
         """Extract the list of uniques values for each cell property (e.g. sex, cell type, etc.) to be predicted"""
         if self.n_cell_properties > 0:
-            self.cell_prop_dist = {}
-            for k, v in self.cell_properties.items():
+            for k, cell_prop in self.cell_properties.items():
 
-                if v is None:
-                    # cell property with continuous value
+                if not cell_prop["discrete"]:
+                    # for cell properties with continuous value, determine the mean/std for normalization
                     cell_vals = self.metadata["obs"][k]
                     # remove nans, negative values, or anything else suspicious
-                    idx = [n for n, cv in enumerate(cell_vals) if cv >= 0 and cv < 9999]
-                    self.cell_prop_dist[k] = {
-                        "mean": np.mean(cell_vals[idx]),
-                        "std": np.std(cell_vals[idx]),
-                    }
-                else:
-                    # cell property with categroical value
+                    idx = [n for n, cv in enumerate(cell_vals) if cv >= 0 and cv < self.max_cell_prop_val]
+                    self.cell_properties[k]["mean"] = np.mean(cell_vals[idx])
+                    self.cell_properties[k]["std"] = np.std(cell_vals[idx])
+
+                elif cell_prop["discrete"] and cell_prop["values"] is None:
+                    # for cell properties with discrete value, determine the possible values if none were supplied
+                    # and find their distribution
                     unique_list, counts = np.unique(self.metadata["obs"][k], return_counts=True)
                     # remove nans, negative values, or anything else suspicious
-                    idx = [n for n, u in enumerate(unique_list) if u in v]
-                    counts = counts[idx]
-                    self.cell_prop_dist[k] = counts / np.mean(counts)
-                print("Cell property info", k, self.cell_prop_dist[k])
+                    idx = [
+                        n for n, u in enumerate(unique_list) if (
+                            isinstance(u, str) or np.abs(u) < self.max_cell_prop_val
+                        )
+                    ]
+                    self.cell_properties[k]["values"] = unique_list[idx]
+                    self.cell_properties[k]["freq"] = counts[idx] / np.mean(counts[idx])
+
+                elif cell_prop["discrete"] and cell_prop["values"] is not None:
+                    unique_list, counts = np.unique(self.metadata["obs"][k], return_counts=True)
+                    idx = [n for n, u in enumerate(unique_list) if u in cell_prop["values"]]
+                    self.cell_properties[k]["freq"] = counts[idx] / np.mean(counts[idx])
+
+                print("Cell property info", k, self.cell_properties[k])
         else:
             self.cell_prop_dist = None
 
@@ -111,19 +122,18 @@ class SingleCellDataset(Dataset):
 
         cell_prop_vals = np.zeros((self.batch_size, self.n_cell_properties), dtype=np.float32)
         for n0, i in enumerate(batch_idx):
-            for n1, (k, v) in enumerate(self.cell_properties.items()):
-                if v is None:
+            for n1, (k, cell_prop) in enumerate(self.cell_properties.items()):
+                if not cell_prop["discrete"]:
                     # continuous value
                     cell_val = self.metadata["obs"][k][i]
-                    if cell_val < 0 or cell_val > 9999:
+                    if np.abs(cell_val) > self.max_cell_prop_val:
                         cell_prop_vals[n0, n1] = -9999
                     else:
-                        cell_prop_vals[n0, n1] = (
-                            cell_val - self.cell_prop_dist[k]["mean"]
-                        ) / self.cell_prop_dist[k]["std"]
+                        # normalize
+                        cell_prop_vals[n0, n1] = (cell_val - cell_prop["mean"]) / cell_prop["std"]
                 else:
-                    # categorical value
-                    idx = np.where(self.metadata["obs"][k][i] == np.array(v))[0]
+                    # discrete value
+                    idx = np.where(self.metadata["obs"][k][i] == np.array(cell_prop["values"]))[0]
                     # cell property values of -1 will imply N/A, and will be masked out
                     cell_prop_vals[n0, n1] = -1 if len(idx) == 0 else idx[0]
 
@@ -136,6 +146,7 @@ class SingleCellDataset(Dataset):
             gene_vals[n, :] = np.memmap(
                 self.data_path, dtype='float16', mode='r', shape=(self.n_genes,), offset=i * self.offset
             ).astype(np.float32)
+
             if self.scale_by_max:
                 gene_vals[n, :] /= (1e-9 + self.metadata["stats"]["max"])
             elif self.normalize_total or self.log_normalize:

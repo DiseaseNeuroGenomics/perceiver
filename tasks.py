@@ -29,26 +29,30 @@ class MSELoss(pl.LightningModule):
             self.cell_prop_accuracy = nn.ModuleDict()
             self.cell_prop_explained_var = nn.ModuleDict()
 
-            for k, v in self.cell_properties.items():
-                if v is not None:
-                    # categorical variable
-                    weights = self.task_cfg["cell_prop_dist"][k]
-                    print(f"Balance classes for property {k}: {weights}")
-                    weight = torch.from_numpy(np.float32(1 / weights)) if task_cfg["balance_classes"] else None
+            for k, cell_prop in self.cell_properties.items():
+                if cell_prop["discrete"]:
+                    # discrete variable, set up cross entropy module
+                    print(f"Balance classes for property {k}: {1 / cell_prop['freq']}")
+                    weight = torch.from_numpy(
+                        np.float32(1 / cell_prop["freq"])
+                    ) if task_cfg["balance_classes"] else None
                     self.cell_prop_cross_ent[k] = nn.CrossEntropyLoss(weight=weight)
-                    self.cell_prop_accuracy[k] = Accuracy(task="multiclass", num_classes=len(v), average="macro")
+                    self.cell_prop_accuracy[k] = Accuracy(
+                        task="multiclass", num_classes=len(cell_prop["values"]), average="macro",
+                    )
+                    print("SETUP", k, len(cell_prop["values"]))
                 else:
-                    # continuous variable
+                    # continuous variable, set up MSE module
                     self.cell_prop_mse[k] = nn.MSELoss()
                     self.cell_prop_explained_var[k] = ExplainedVariance()
         else:
-            self.cell_prop_cross_ent = self.cell_prop_accuracy = self.cell_prop_mse = self.cell_prop_explained_var = None
+            self.cell_prop_cross_ent = None
+            self.cell_prop_accuracy = None
+            self.cell_prop_mse = None
+            self.cell_prop_explained_var = None
 
         self.gene_explained_var = ExplainedVariance()
         self.metrics = MetricCollection([ExplainedVariance()])
-        self.train_metrics = self.metrics.clone(prefix="train_")
-        self.val_metrics = self.metrics.clone(prefix="val_")
-        self.test_metrics = self.metrics.clone(prefix="test_")
 
         self._create_results_dict()
 
@@ -70,14 +74,16 @@ class MSELoss(pl.LightningModule):
         cell_prop_loss = 0
 
         if self.cell_properties is not None:
-            for n, (k, v) in enumerate(self.cell_properties.items()):
-                if k in self.cell_prop_cross_ent.keys():
+            for n, (k, cell_prop) in enumerate(self.cell_properties.items()):
+                if cell_prop["discrete"]:
+                    # discrete variable, use cross entropy
                     # class values of -1 will be masked out
                     idx = torch.where(cell_prop_targets[:, n] >= 0)[0]
                     cell_prop_loss += self.cell_prop_cross_ent[k](
                         cell_prop_pred[k][idx], cell_prop_targets[idx, n].to(torch.int64)
                     )
-                elif k in self.cell_prop_mse.keys():
+                else:
+                    # continuous variable, use MSE
                     # class values less than -999 or greater than 999 will be masked out
                     idx = torch.where(cell_prop_targets[:, n] > -999)[0]
                     cell_prop_loss += self.cell_prop_mse[k](
@@ -104,9 +110,9 @@ class MSELoss(pl.LightningModule):
 
         self.gene_explained_var(gene_pred, gene_targets.unsqueeze(2))
 
-        if self.network.cell_properties is not None:
-            for n, (k, v) in enumerate(self.network.cell_properties.items()):
-                if k in self.cell_prop_cross_ent.keys():
+        if self.cell_properties is not None:
+            for n, (k, cell_prop) in enumerate(self.cell_properties.items()):
+                if cell_prop["discrete"]:
                     predict_idx = torch.argmax(cell_prop_pred[k], dim=-1)
                     # property values of -1 will be masked out
                     idx = torch.where(cell_prop_targets[:, n] >= 0)[0]
@@ -115,7 +121,7 @@ class MSELoss(pl.LightningModule):
                     )
                     self.results[k].append(cell_prop_targets[:, n].detach().cpu().numpy())
                     self.results["pred_" + k].append(predict_idx.detach().cpu().numpy())
-                elif k in self.cell_prop_mse.keys():
+                else:
                     # property values < -999  will be masked out
                     idx = torch.where(cell_prop_targets[:, n] > - 999)[0]
                     self.cell_prop_explained_var[k].update(
@@ -136,14 +142,14 @@ class MSELoss(pl.LightningModule):
 
         v = self.trainer.logger.version
         fn = f"{self.trainer.log_dir}/lightning_logs/version_{v}/test_results.pkl"
-        for k in self.network.cell_properties.keys():
+        for k in self.cell_properties.keys():
             self.results[k] = np.stack(self.results[k])
             self.results["pred_" + k] = np.stack(self.results["pred_" + k])
 
         pickle.dump(self.results, open(fn, "wb"))
 
         self.results["epoch"] = self.current_epoch + 1
-        for k in self.network.cell_properties.keys():
+        for k in self.cell_properties.keys():
             self.results[k] = []
             self.results["pred_" + k] = []
 
@@ -182,6 +188,37 @@ class MSELoss(pl.LightningModule):
 
         # update params
         optimizer.step(closure=closure)
+
+
+class AdverserialLoss(MSELoss):
+    def __init__(
+            self,
+            network,
+            task_cfg,
+            **kwargs
+    ):
+        # Initialize superclass
+        super().__init__(network, task_cfg, **kwargs)
+        self.automatic_optimization = False
+        self.network_params = [p for n, p in self.network.named_parameters() if "SubID" not in n]
+        self.adverserial_params = [p for n, p in self.network.named_parameters() if "SubID" in n]
+
+
+    def configure_optimizers(self):
+
+        opt0 = torch.optim.AdamW(
+            self.network_params,
+            lr=self.task_cfg["learning_rate"],
+            weight_decay=self.task_cfg["weight_decay"],
+        )
+        opt1 = torch.optim.AdamW(
+            self.adverserial_params,
+            lr=self.task_cfg["learning_rate"],
+            weight_decay=self.task_cfg["weight_decay"],
+         )
+
+        return opt0, opt1
+
 
 
 class Classification(MSELoss):
