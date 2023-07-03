@@ -224,13 +224,15 @@ class Exceiver(nn.Module):
         return gene_pred, cell_prop_pred, latent
 
 
-def extract_state_dict(model_save_path, device):
+def extract_state_dict(model_save_path, network):
 
+    networks_params = [n for n, _ in network.named_parameters()]
     state_dict = {}
     ckpt = torch.load(model_save_path)
     for k, v in ckpt["state_dict"].items():
         k1 = k.split(".")
         k1 = ".".join(k1[1:])
-        state_dict[k1] = v.to(device=device)
+        if k1 in networks_params:
+            state_dict[k1] = v
 
     return state_dict
