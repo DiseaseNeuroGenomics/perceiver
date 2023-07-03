@@ -4,14 +4,13 @@ channels:
   - pytorch
   - nvidia
   - conda-forge
-  - bioconda
 dependencies:
   - pip
-  - python=3.9
-  - matplotlib=3.6
+  - python=3.9.0
+  - pytorch=2.0.1=*cuda*
   - pytorch::pytorch-cuda=11.7
-  - conda-forge::pytorch-lightning=1.9.2
-  - bioconda::scanpy
+  - conda-forge::pytorch-lightning=2.0.4
+  - conda-forge::scanpy=1.9.3
   - pip:
     - anndata==0.9.0rc1
     - mygene
