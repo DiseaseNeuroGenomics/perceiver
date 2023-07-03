@@ -103,6 +103,7 @@ class SingleCellDataset(Dataset):
                             isinstance(u, str) or np.abs(u) < self.max_cell_prop_val
                         )
                     ]
+                    print(k, len(idx))
                     self.cell_properties[k]["values"] = unique_list[idx]
                     self.cell_properties[k]["freq"] = counts[idx] / np.mean(counts[idx])
 
@@ -111,7 +112,7 @@ class SingleCellDataset(Dataset):
                     idx = [n for n, u in enumerate(unique_list) if u in cell_prop["values"]]
                     self.cell_properties[k]["freq"] = counts[idx] / np.mean(counts[idx])
 
-                print("Cell property info", k, self.cell_properties[k])
+                print(f"Cell property {k} freq size: {len(self.cell_properties[k]['freq'])}")
         else:
             self.cell_prop_dist = None
 
