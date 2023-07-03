@@ -133,8 +133,10 @@ class Exceiver(nn.Module):
         if self.n_cell_props > 0:
             self.cell_prop_emb = nn.Embedding(self.n_cell_props + 1, seq_dim, padding_idx=self.n_cell_props)
             self.cell_prop_mlp = nn.ModuleDict()
-            for k, v in cell_properties.items():
-                n_targets = 1 if v is None else len(v)
+            for k, cell_prop in cell_properties.items():
+                # the output size of the cell property prediction MLP will be 1 if the property is continuous;
+                # if it is discrete, then it will be the length of the possible values
+                n_targets = 1 if not cell_prop["discrete"] else len(cell_prop["values"])
                 self.cell_prop_mlp[k] = nn.Sequential(nn.LayerNorm(seq_dim), nn.Linear(seq_dim, n_targets))
 
     def encoder_attn_step(
@@ -224,15 +226,24 @@ class Exceiver(nn.Module):
         return gene_pred, cell_prop_pred, latent
 
 
-def extract_state_dict(model_save_path, network):
+def load_model(model_save_path, model):
 
-    networks_params = [n for n, _ in network.named_parameters()]
+    params_loaded = []
+    non_network_params = []
     state_dict = {}
     ckpt = torch.load(model_save_path)
     for k, v in ckpt["state_dict"].items():
         k1 = k.split(".")
+        if not k1[0] == "network":
+            non_network_params.append(k)
         k1 = ".".join(k1[1:])
-        if k1 in networks_params:
-            state_dict[k1] = v
+        for n, p in model.named_parameters():
+            if n == k1 and p.size() == v.size():
+                state_dict[k1] = v
+                params_loaded.append(n)
 
-    return state_dict
+    model.load_state_dict(state_dict, strict=True)
+    print(f"Number of params loaded: {len(params_loaded)}")
+    print(f"Non-network parameters not loaded: {non_network_params}")
+
+    return model

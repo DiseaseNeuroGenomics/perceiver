@@ -3,7 +3,7 @@ import torch
 import pytorch_lightning as pl
 from pytorch_lightning.strategies.ddp import DDPStrategy
 from datasets import DataModule
-from networks import Exceiver, extract_state_dict
+from networks import Exceiver, load_model
 from tasks import MSELoss
 from config import test_dataset_cfg, task_cfg, model_cfg, trainer_cfg, test_cfg
 import warnings
@@ -26,17 +26,15 @@ def main():
 
     # Transfer information from Dataset
     model_cfg["seq_len"] = dm.train_dataset.n_genes
-    model_cfg["cell_properties"] = test_dataset_cfg["cell_properties"]
-    task_cfg["cell_prop_dist"] = dm.train_dataset.cell_prop_dist
+    model_cfg["cell_properties"] = dm.train_dataset.cell_properties
+    task_cfg["cell_properties"] = dm.train_dataset.cell_properties
 
     # Create network
     model = Exceiver(**model_cfg)
 
     #model = torch.load(test_cfg["ckpt_path"])
-    state_dict = extract_state_dict(test_cfg["ckpt_path"], model)
-    model.load_state_dict(state_dict)
+    model = load_model(test_cfg["ckpt_path"], model)
 
-    task_cfg["cell_properties"] = test_dataset_cfg["cell_properties"]
     task = MSELoss(
         network=model,
         task_cfg=task_cfg,
@@ -52,7 +50,7 @@ def main():
         precision=trainer_cfg["precision"],
         strategy=DDPStrategy(find_unused_parameters=True) if trainer_cfg["n_devices"] > 1 else "auto",
         limit_train_batches=1,
-        #limit_val_batches=1000,
+        limit_val_batches=200,
 
     )
 
