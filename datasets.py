@@ -139,7 +139,7 @@ class SingleCellDataset(Dataset):
             if self.scale_by_max:
                 gene_vals[n, :] /= (1e-9 + self.metadata["stats"]["max"])
             elif self.normalize_total or self.log_normalize:
-                gene_vals[n, :] = self._normalize( gene_vals[n, :])
+                gene_vals[n, :] = self._normalize(gene_vals[n, :])
 
         zero_idx = np.where(gene_vals == 0)
         gene_vals = torch.from_numpy(gene_vals)
