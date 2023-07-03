@@ -50,6 +50,7 @@ def main(adverserial: bool=True):
 
 
     trainer = pl.Trainer(
+        enable_checkpointing=True,
         accelerator='gpu',
         devices=trainer_cfg["n_devices"],
         max_epochs=1000,

@@ -83,8 +83,12 @@ class SingleCellDataset(Dataset):
     def _get_cell_prop_info(self):
         """Extract the list of uniques values for each cell property (e.g. sex, cell type, etc.) to be predicted"""
         if self.n_cell_properties > 0:
-            for k, cell_prop in self.cell_properties.items():
 
+            for k, cell_prop in self.cell_properties.items():
+                # skip if required field are already present as this function can be called multiple
+                # times if using multiple GPUs
+                if "freq" in self.cell_properties[k] or "mean" in self.cell_properties[k]:
+                    continue
                 if not cell_prop["discrete"]:
                     # for cell properties with continuous value, determine the mean/std for normalization
                     cell_vals = self.metadata["obs"][k]
