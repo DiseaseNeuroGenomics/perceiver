@@ -232,14 +232,17 @@ def load_model(model_save_path, model):
     non_network_params = []
     state_dict = {}
     ckpt = torch.load(model_save_path)
-    for k, v in ckpt["state_dict"].items():
-        k1 = k.split(".")
-        if not k1[0] == "network":
+    key = "state_dict" if "state_dict" in ckpt else "model_state_dict"
+    for k, v in ckpt[key].items():
+
+        if "cell_property" in k:
             non_network_params.append(k)
-        k1 = ".".join(k1[1:])
+        elif "network" in k:
+            k = k.split(".")
+            k = ".".join(k[1:])
         for n, p in model.named_parameters():
-            if n == k1 and p.size() == v.size():
-                state_dict[k1] = v
+            if n == k and p.size() == v.size():
+                state_dict[k] = v
                 params_loaded.append(n)
 
     model.load_state_dict(state_dict, strict=True)
