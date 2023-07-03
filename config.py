@@ -43,20 +43,20 @@ trainer_cfg = {
 
 task_cfg = {
     # "classify": True,
-    "learning_rate": 0.01,
+    "learning_rate": 0.1,
     "weight_decay": 0.00001,
     "warmup_steps": 12_000,
     "decay_steps": 100_000,
     "decay": 0.999988,
-    "balance_classes": False,
+    "balance_classes": True,
 
 }
 
 model_cfg = {
-    "seq_dim": 256,
+    "seq_dim": 512,
     "query_len": 64,
-    "query_dim": 256,
-    "n_layers": 8,
+    "query_dim": 512,
+    "n_layers": 10,
     "dim_feedforward": 1024,
     "n_heads": 2,
     "dropout": 0.0,

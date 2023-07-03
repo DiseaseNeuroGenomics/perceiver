@@ -200,12 +200,12 @@ class AdverserialLoss(MSELoss):
         network,
         task_cfg,
         adv_cell_prop: str = "SubID",
-        adv_loss_ratio: float = 0.1,
+        adv_loss_ratio: float = 0.025,
         **kwargs
     ):
         # Initialize superclass
         super().__init__(network, task_cfg, **kwargs)
-
+        print("ADV LOSS COEFF", adv_loss_ratio)
         self.automatic_optimization = False
         self.network_params = [p for n, p in self.network.named_parameters() if "SubID" not in n]
         self.adv_params = [p for n, p in self.network.named_parameters() if "SubID" in n]
@@ -222,7 +222,7 @@ class AdverserialLoss(MSELoss):
     def training_step(self, batch, batch_idx):
 
         opt0, opt1 = self.configure_optimizers()
-
+        opt0, opt1 = self.update_lr(opt0, opt1)
         gene_ids, gene_target_ids, cell_prop_ids, gene_vals, gene_targets, key_padding_mask, cell_prop_targets = batch
         gene_pred, cell_prop_pred, latent = self.network.forward(
             gene_ids, gene_target_ids, cell_prop_ids, gene_vals, key_padding_mask,
@@ -246,7 +246,7 @@ class AdverserialLoss(MSELoss):
                         cell_prop_pred[self.adv_cell_prop][idx], cell_prop_targets[idx, n].to(torch.int64)
                     )
                     self.manual_backward(adv_loss, retain_graph=True)
-                    opt1.step()
+                    #opt1.step()
                     # TODO: currently not displaying accuracy, only the loss
                     self.adv_accuracy[self.adv_cell_prop].update(cell_prop_pred[k][idx], cell_prop_targets[idx, n])
             else:
@@ -264,9 +264,11 @@ class AdverserialLoss(MSELoss):
 
         opt0.zero_grad()
         self.manual_backward(loss)
-        opt0.step()
 
-        self.update_lr(opt0, opt1)
+        opt0.step()
+        opt1.step()
+
+       #  self.update_lr(opt0, opt1)
 
         self.log("gene_loss", gene_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
         self.log(
@@ -301,6 +303,7 @@ class AdverserialLoss(MSELoss):
         for opt in [opt0, opt1]:
             for pg in opt.param_groups:
                 pg["lr"] = lr
+        return opt0, opt1
 
 
     def configure_optimizers(self):
