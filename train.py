@@ -57,14 +57,11 @@ def main(adverserial: bool = True):
         accumulate_grad_batches=trainer_cfg["accumulate_grad_batches"],
         precision=trainer_cfg["precision"],
         strategy=DDPStrategy(find_unused_parameters=True) if trainer_cfg["n_devices"] > 1 else "auto",
-        limit_train_batches=40,
-        limit_val_batches=40,
+        limit_train_batches=4000,
+        limit_val_batches=500,
     )
 
-
     trainer.fit(task, dm)
-
-
 
 
 if __name__ == "__main__":

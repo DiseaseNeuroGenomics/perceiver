@@ -307,12 +307,12 @@ class AdverserialLoss(MSELoss):
 
         opt0 = torch.optim.AdamW(
             self.network_params,
-            lr=self.task_cfg["learning_rate"],
+            lr=0.0,
             weight_decay=self.task_cfg["weight_decay"],
         )
         opt1 = torch.optim.AdamW(
             self.adv_params,
-            lr=self.task_cfg["learning_rate"],
+            lr=0.0,
             weight_decay=self.task_cfg["weight_decay"],
          )
 
