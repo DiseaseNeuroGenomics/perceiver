@@ -24,14 +24,16 @@ def main():
 
     dm.setup(None)
 
-    # Create network
+    # Transfer information from Dataset
     model_cfg["seq_len"] = dm.train_dataset.n_genes
     model_cfg["cell_properties"] = test_dataset_cfg["cell_properties"]
+    task_cfg["cell_prop_dist"] = dm.train_dataset.cell_prop_dist
 
+    # Create network
     model = Exceiver(**model_cfg)
 
     #model = torch.load(test_cfg["ckpt_path"])
-    state_dict = extract_state_dict(test_cfg["ckpt_path"])
+    state_dict = extract_state_dict(test_cfg["ckpt_path"], model)
     model.load_state_dict(state_dict)
 
     task_cfg["cell_properties"] = test_dataset_cfg["cell_properties"]
@@ -50,7 +52,7 @@ def main():
         precision=trainer_cfg["precision"],
         strategy=DDPStrategy(find_unused_parameters=True) if trainer_cfg["n_devices"] > 1 else "auto",
         limit_train_batches=1,
-        limit_val_batches=1000,
+        #limit_val_batches=1000,
 
     )
 
