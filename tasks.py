@@ -19,7 +19,7 @@ class MSELoss(pl.LightningModule):
         super().__init__()
         self.network = network
         self.task_cfg = task_cfg
-        self.cell_properties = self.network.cell_properties
+        self.cell_properties = self.task_cfg["cell_properties"]
 
         # Functions and metrics
         self.mse = nn.MSELoss()
@@ -29,10 +29,12 @@ class MSELoss(pl.LightningModule):
             self.cell_prop_accuracy = nn.ModuleDict()
             self.cell_prop_explained_var = nn.ModuleDict()
 
-            for k, v in self.network.cell_properties.items():
+            for k, v in self.cell_properties.items():
                 if v is not None:
                     # categorical variable
-                    weight = torch.from_numpy(np.float32(1 / v)) if task_cfg["balance_classes"] else None
+                    weights = self.task_cfg["cell_prop_dist"][k]
+                    print(f"Balance classes for property {k}: {weights}")
+                    weight = torch.from_numpy(np.float32(1 / weights)) if task_cfg["balance_classes"] else None
                     self.cell_prop_cross_ent[k] = nn.CrossEntropyLoss(weight=weight)
                     self.cell_prop_accuracy[k] = Accuracy(task="multiclass", num_classes=len(v), average="macro")
                 else:
@@ -53,7 +55,7 @@ class MSELoss(pl.LightningModule):
     def _create_results_dict(self):
 
         self.results = {"epoch": 0}
-        for k in self.network.cell_properties.keys():
+        for k in self.cell_properties.keys():
             self.results[k] = []
             self.results["pred_" + k] = []
 
@@ -67,8 +69,8 @@ class MSELoss(pl.LightningModule):
         gene_loss = self.mse(gene_pred, gene_targets.unsqueeze(2))
         cell_prop_loss = 0
 
-        if self.network.cell_properties is not None:
-            for n, (k, v) in enumerate(self.network.cell_properties.items()):
+        if self.cell_properties is not None:
+            for n, (k, v) in enumerate(self.cell_properties.items()):
                 if k in self.cell_prop_cross_ent.keys():
                     # class values of -1 will be masked out
                     idx = torch.where(cell_prop_targets[:, n] >= 0)[0]

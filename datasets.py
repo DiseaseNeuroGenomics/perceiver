@@ -99,7 +99,7 @@ class SingleCellDataset(Dataset):
                     # remove nans, negative values, or anything else suspicious
                     idx = [n for n, u in enumerate(unique_list) if u in v]
                     counts = counts[idx]
-                    self.cell_prop_dist[k] = counts / np.max(counts)
+                    self.cell_prop_dist[k] = counts / np.mean(counts)
                 print("Cell property info", k, self.cell_prop_dist[k])
         else:
             self.cell_prop_dist = None

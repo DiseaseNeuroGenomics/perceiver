@@ -24,10 +24,12 @@ def main():
 
     dm.setup(None)
 
-    # Create network
+    # Transfer information from Dataset
     model_cfg["seq_len"] = dm.train_dataset.n_genes
     model_cfg["cell_properties"] = dataset_cfg["cell_properties"]
+    task_cfg["cell_prop_dist"] = dm.train_dataset.cell_prop_dist
 
+    # Create network
     model = Exceiver(**model_cfg)
 
     task = MSELoss(
