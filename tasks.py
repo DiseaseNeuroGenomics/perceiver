@@ -218,7 +218,6 @@ class AdverserialLoss(MSELoss):
         )
         self.steps = 0.0
 
-
     def training_step(self, batch, batch_idx):
 
         opt0, opt1 = self.configure_optimizers()
@@ -230,6 +229,7 @@ class AdverserialLoss(MSELoss):
 
         gene_loss = self.mse(gene_pred, gene_targets.unsqueeze(2))
         cell_prop_loss = 0
+        adv_loss = 0
 
         for n, (k, cell_prop) in enumerate(self.cell_properties.items()):
             alpha = - self.adv_loss_ratio if k == self.adv_cell_prop else 1.0
@@ -241,12 +241,13 @@ class AdverserialLoss(MSELoss):
                     cell_prop_pred[k][idx], cell_prop_targets[idx, n].to(torch.int64)
                 )
                 if k == self.adv_cell_prop:
+                    # calculate gradient for the MLP projecting to adv_cell_prop (e.g. "SubID")
                     opt1.zero_grad()
                     adv_loss = self.cell_prop_cross_ent[self.adv_cell_prop](
                         cell_prop_pred[self.adv_cell_prop][idx], cell_prop_targets[idx, n].to(torch.int64)
                     )
                     self.manual_backward(adv_loss, retain_graph=True)
-                    #opt1.step()
+
                     # TODO: currently not displaying accuracy, only the loss
                     self.adv_accuracy[self.adv_cell_prop].update(cell_prop_pred[k][idx], cell_prop_targets[idx, n])
             else:
@@ -265,11 +266,15 @@ class AdverserialLoss(MSELoss):
         opt0.zero_grad()
         self.manual_backward(loss)
 
+        # clip gradients
+        self.clip_gradients(opt0, gradient_clip_val=0.5, gradient_clip_algorithm="norm")
+        self.clip_gradients(opt1, gradient_clip_val=0.5, gradient_clip_algorithm="norm")
+
+        # apply gradient step
         opt0.step()
         opt1.step()
 
-       #  self.update_lr(opt0, opt1)
-
+        # log results
         self.log("gene_loss", gene_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
         self.log(
             "cell_loss",
@@ -320,59 +325,3 @@ class AdverserialLoss(MSELoss):
          )
 
         return opt0, opt1
-
-
-class Classification(MSELoss):
-    def __init__(
-        self,
-        network,
-        task_cfg,
-        **kwargs
-    ):
-
-        # Initialize superclass
-        super().__init__(None, task_cfg)
-        self.network = network
-        self.task_cfg = task_cfg
-
-        # Functions and metrics
-        self.cross_ent = nn.CrossEntropyLoss()
-        self.accuracy = MulticlassAccuracy(num_classes=task_cfg["n_classes"], average="macro")
-        self.metrics = MetricCollection([ExplainedVariance()])
-        self.train_metrics = self.metrics.clone(prefix="train_")
-        self.val_metrics = self.metrics.clone(prefix="val_")
-        self.test_metrics = self.metrics.clone(prefix="test_")
-
-    def training_step(self, batch, batch_idx):
-
-        gene_ids, gene_vals, key_padding_mask, classes = batch
-        decoder_out, latent = self.network.forward(
-            gene_ids, gene_vals, key_padding_mask,
-        )
-
-        y_hat = self.network.mlp(decoder_out).squeeze()
-
-        #target = nn.functional.one_hot(classes, num_classes=self.task_cfg["n_classes"])
-        target = classes.to(dtype=torch.int64)
-        loss = self.cross_ent(y_hat, target)
-
-        self.log("train_loss", loss, on_step=False, on_epoch=True, prog_bar=True)
-        return loss
-
-    def validation_step(self, batch, batch_idx):
-
-        gene_ids, gene_vals, key_padding_mask, classes = batch
-        decoder_out, latent = self.network.forward(
-            gene_ids, gene_vals, key_padding_mask,
-        )
-        y_hat = self.network.mlp(decoder_out).squeeze()
-
-        #target = nn.functional.one_hot(classes, num_classes=self.task_cfg["n_classes"])
-        target = classes.to(dtype=torch.int64)
-
-        loss = self.cross_ent(y_hat, target)
-        acc = self.accuracy(y_hat, target)
-
-        self.log("accuracy", acc, on_step=False, on_epoch=True, prog_bar=True)
-        return loss
-
