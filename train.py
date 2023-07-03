@@ -1,5 +1,6 @@
 
 import torch
+import pickle
 import pytorch_lightning as pl
 from pytorch_lightning.strategies.ddp import DDPStrategy
 from datasets import DataModule
@@ -13,11 +14,21 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 print(f"GPU is available {torch.cuda.is_available()}")
 torch.set_float32_matmul_precision('medium')
 
+def check_train_test_set(cfg):
+    train = pickle.load(open(cfg["train_metadata_path"], "rb"))
+    test = pickle.load(open(cfg["test_metadata_path"], "rb"))
+    train_ids = set(train["obs"]["SubID"])
+    test_ids = set(test["obs"]["SubID"])
+    print(f"Number of subjects in train set: {len(train_ids)}, and test set: {len(test_ids)}")
+    train_test_inter = train_ids.intersection(test_ids)
+    print(f"Number of train users in test set: {len(train_test_inter)}")
 
 def main(adverserial: bool=True):
 
     # Set seed
     pl.seed_everything(2299)
+
+    check_train_test_set(dataset_cfg)
 
     # Set up data module
     dm = DataModule(**dataset_cfg)
@@ -52,6 +63,7 @@ def main(adverserial: bool=True):
     )
 
     trainer.fit(task, dm)
+
 
 
 
