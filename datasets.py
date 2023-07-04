@@ -29,6 +29,8 @@ class SingleCellDataset(Dataset):
         pin_memory: bool = False,
         cell_prop_same_ids: bool = False,
         max_cell_prop_val: float = 999,
+        cutmix_pct: float = 0.5,
+        max_gene_val: float = 10.0,
     ):
 
         self.metadata = pickle.load(open(metadata_path, "rb"))
@@ -56,6 +58,8 @@ class SingleCellDataset(Dataset):
         self.pin_memory = pin_memory
         self.cell_prop_same_ids = cell_prop_same_ids
         self.max_cell_prop_val = max_cell_prop_val
+        self.cutmix_pct = cutmix_pct
+        self.max_gene_val = max_gene_val
 
         self.offset = 2 * self.n_genes  # FP16 is 2 bytes
         self._get_cell_prop_info()
@@ -107,7 +111,7 @@ class SingleCellDataset(Dataset):
                             isinstance(u, str) or np.abs(u) < self.max_cell_prop_val
                         )
                     ]
-                    print(k, len(idx))
+
                     self.cell_properties[k]["values"] = unique_list[idx]
                     self.cell_properties[k]["freq"] = counts[idx] / np.mean(counts[idx])
 
@@ -158,10 +162,9 @@ class SingleCellDataset(Dataset):
             elif self.normalize_total or self.log_normalize:
                 gene_vals[n, :] = self._normalize(gene_vals[n, :])
 
-        zero_idx = np.where(gene_vals == 0)
         gene_vals = torch.from_numpy(gene_vals)
         # return two copies since we'll modify gene_vals but keep gene_targets as is
-        return gene_vals, gene_vals, zero_idx
+        return gene_vals, gene_vals
 
     def _rank_order(self, x: np.ndarray) -> np.ndarray:
         """Expression values of 0 are mapped to 0. Expression values > 0 will be mapped to the percentage of
@@ -174,7 +177,7 @@ class SingleCellDataset(Dataset):
         for val, count in zip(vals, counts):
             s = np.sum(counts[val > vals]) / total_sum
             idx = np.where(x == val)[0]
-            cell_rank[idx] = np.clip(s, 0.01, 1.0)
+            cell_rank[idx] = np.clip(s, 0.1, 1.0) ** 2
 
         return cell_rank
 
@@ -182,17 +185,62 @@ class SingleCellDataset(Dataset):
 
         x = x * self.normalize_total / np.sum(x) if self.normalize_total is not None else x
         x = np.log1p(x) if self.log_normalize else x
+        x = np.clip(x, 0.0, self.max_gene_val)
+
         return x
 
     def _prepare_data(self, batch_idx):
 
-        gene_vals, gene_targets, zero_idx = self._get_gene_vals(batch_idx)
+        gene_vals, gene_targets = self._get_gene_vals(batch_idx)
         cell_prop_vals = self._get_cell_prop_vals(batch_idx)
 
+        if self.cutmix_pct > 0:
+            gene_vals, gene_targets, cell_prop_vals = self._cutmix(gene_vals, gene_targets, cell_prop_vals)
+
+        zero_idx = np.where(gene_vals == 0)
         key_padding_mask = torch.zeros_like(gene_vals).detach()
         key_padding_mask[zero_idx[0], zero_idx[1]] = 1.0
 
         return gene_vals, key_padding_mask, gene_targets, cell_prop_vals
+
+    def _cutmix(self, gene_vals, gene_targets, cell_prop_vals):
+
+        batch_set = set(np.arange(self.batch_size))
+
+        new_cell_prop_vals = torch.zeros_like(cell_prop_vals)
+        new_gene_targets = torch.zeros_like(gene_targets)
+        new_gene_vals = torch.zeros_like(gene_vals)
+
+
+        for n in range(self.batch_size):
+            if np.random.rand() < self.cutmix_pct:
+                j = np.random.choice(list(batch_set.difference(set([n]))))
+                alpha = np.random.uniform(0.1, 0.9)
+
+                # mix-up gene values
+                start_idx = np.random.randint(0, int(alpha * self.n_genes) - 1)
+                end_idx = start_idx + int((1 - alpha) * self.n_genes)
+                new_gene_vals[n, :] = gene_vals[n, :]
+                new_gene_vals[n, start_idx : end_idx] = gene_vals[j, start_idx: end_idx]
+
+                # ensure it has enough non-zero entries if not; then revert
+                if torch.sum(new_gene_vals[n, :] > 0) < self.n_mask:
+                    new_gene_vals[n, :] = gene_vals[n, :]
+                    continue
+
+                # take the weighted average of the targets
+                new_cell_prop_vals[n, :] = alpha * cell_prop_vals[n, :] + (1 - alpha) * cell_prop_vals[j, :]
+                new_gene_targets[n, :] = alpha * gene_targets[n, :] + (1 - alpha) * gene_targets[j, :]
+                start_idx = np.random.randint(0, int(alpha * self.n_genes) - 1)
+                end_idx = start_idx + int((1 - alpha) * self.n_genes)
+                new_gene_vals[n, start_idx : end_idx] = gene_vals[j, start_idx : end_idx]
+
+            else:
+                new_cell_prop_vals[n, :] = cell_prop_vals[n, :]
+                new_gene_targets[n, :] = gene_targets[n, :]
+                new_gene_vals[n, :] = gene_vals[n, :]
+
+        return new_gene_vals, new_gene_targets, new_cell_prop_vals
 
     def __getitem__(self, idx: List[int]):
 
@@ -363,7 +411,7 @@ class DataModule(pl.LightningDataModule):
         rank_order: bool = False,
         cell_properties: Optional[Dict[str, Any]] = None,
         cell_prop_same_ids: bool = False,
-
+        cutmix_pct: float = 0.5,
     ):
         super().__init__()
         self.train_data_path = train_data_path
@@ -376,6 +424,7 @@ class DataModule(pl.LightningDataModule):
         self.rank_order = rank_order
         self.cell_properties = cell_properties
         self.cell_prop_same_ids = cell_prop_same_ids
+        self.cutmix_pct = cutmix_pct
 
     def setup(self, stage):
 
@@ -388,6 +437,7 @@ class DataModule(pl.LightningDataModule):
             rank_order=self.rank_order,
             pin_memory=False,
             cell_prop_same_ids=self.cell_prop_same_ids,
+            cutmix_pct=self.cutmix_pct,
         )
         self.val_dataset = SingleCellDataset(
             self.test_data_path,
@@ -398,6 +448,7 @@ class DataModule(pl.LightningDataModule):
             rank_order=self.rank_order,
             pin_memory=False,
             cell_prop_same_ids=self.cell_prop_same_ids,
+            cutmix_pct=0.0,
         )
         self.n_genes = self.train_dataset.n_genes
         print(f"number of genes {self.n_genes}")
