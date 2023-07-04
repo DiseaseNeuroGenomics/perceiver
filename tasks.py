@@ -82,6 +82,7 @@ class MSELoss(pl.LightningModule):
         gene_pred, cell_prop_pred, latent = self.network.forward(
             gene_ids, gene_target_ids, cell_prop_ids, gene_vals, key_padding_mask,
         )
+        p_dims = [len(p["values"]) for p in self.cell_properties.values()]
 
         gene_loss = self.mse(gene_pred, gene_targets.unsqueeze(2))
         cell_prop_loss = 0
@@ -91,18 +92,18 @@ class MSELoss(pl.LightningModule):
                 if cell_prop["discrete"]:
                     # discrete variable, use cross entropy
                     # class values of -1 will be masked out
-                    idx = torch.where(cell_prop_targets[:, n] >= 0)[0]
+                    idx = torch.where(cell_prop_targets[:, n, 0] >= 0)[0]
                     if len(idx) > 0:
                         cell_prop_loss += self.cell_prop_cross_ent[k](
-                            cell_prop_pred[k][idx], cell_prop_targets[idx, n].to(torch.int64)
+                            cell_prop_pred[k][idx], cell_prop_targets[idx, n, : p_dims[n]]
                         )
                 else:
                     # continuous variable, use MSE
                     # class values less than -999 or greater than 999 will be masked out
-                    idx = torch.where(cell_prop_targets[:, n] > -999)[0]
+                    idx = torch.where(cell_prop_targets[:, n, 0] > -999)[0]
                     if len(idx) > 0:
                         cell_prop_loss += self.cell_prop_mse[k](
-                            cell_prop_pred[k][idx], cell_prop_targets[idx, n]
+                            cell_prop_pred[k][idx], cell_prop_targets[idx, n, 0]
                         )
 
         # TODO: fit this
@@ -122,6 +123,8 @@ class MSELoss(pl.LightningModule):
         gene_pred, cell_prop_pred, latent = self.network.forward(
             gene_ids, gene_target_ids, cell_prop_ids, gene_vals, key_padding_mask,
         )
+
+        cell_prop_targets = cell_prop_targets[:, :, 0]
 
         self.gene_explained_var(gene_pred, gene_targets.unsqueeze(2))
 

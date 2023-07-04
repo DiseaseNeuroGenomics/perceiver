@@ -129,22 +129,27 @@ class SingleCellDataset(Dataset):
         if self.n_cell_properties == 0:
             return None
 
-        cell_prop_vals = np.zeros((self.batch_size, self.n_cell_properties), dtype=np.float32)
+        p_dims = [len(p["values"]) for p in self.cell_properties.values()]
+
+        cell_prop_vals = np.zeros((self.batch_size, self.n_cell_properties, np.max(p_dims)), dtype=np.float32)
         for n0, i in enumerate(batch_idx):
             for n1, (k, cell_prop) in enumerate(self.cell_properties.items()):
                 if not cell_prop["discrete"]:
                     # continuous value
                     cell_val = self.metadata["obs"][k][i]
                     if np.abs(cell_val) > self.max_cell_prop_val:
-                        cell_prop_vals[n0, n1] = -9999
+                        cell_prop_vals[n0, n1, 0] = -9999
                     else:
                         # normalize
-                        cell_prop_vals[n0, n1] = (cell_val - cell_prop["mean"]) / cell_prop["std"]
+                        cell_prop_vals[n0, n1, 0] = (cell_val - cell_prop["mean"]) / cell_prop["std"]
                 else:
                     # discrete value
                     idx = np.where(self.metadata["obs"][k][i] == np.array(cell_prop["values"]))[0]
                     # cell property values of -1 will imply N/A, and will be masked out
-                    cell_prop_vals[n0, n1] = -1 if len(idx) == 0 else idx[0]
+                    if len(idx) == 0:
+                        cell_prop_vals[n0, n1, 0] = -9999
+                    else:
+                        cell_prop_vals[n0, n1, idx[0]] = 1.0
 
         return torch.from_numpy(cell_prop_vals)
 
@@ -205,18 +210,21 @@ class SingleCellDataset(Dataset):
 
     def _cutmix(self, gene_vals, gene_targets, cell_prop_vals):
 
-        batch_set = set(np.arange(self.batch_size))
+        # determine the cells with no missing values
+        p = cell_prop_vals[:, :, 0].detach().numpy()
+        good_idx = list(np.where(np.sum(p < -999, axis=1) == 0)[0])
+        good_set = set(good_idx)
 
         new_cell_prop_vals = torch.zeros_like(cell_prop_vals)
         new_gene_targets = torch.zeros_like(gene_targets)
         new_gene_vals = torch.zeros_like(gene_vals)
 
-
         for n in range(self.batch_size):
-            if np.random.rand() < self.cutmix_pct:
-                j = np.random.choice(list(batch_set.difference(set([n]))))
+            if n in good_idx and np.random.rand() < self.cutmix_pct:
+                # randomly choose partner
+                j = np.random.choice(list(good_set.difference(set([n]))))
+                # set mix percentage
                 alpha = np.random.uniform(0.1, 0.9)
-
                 # mix-up gene values
                 start_idx = np.random.randint(0, int(alpha * self.n_genes) - 1)
                 end_idx = start_idx + int((1 - alpha) * self.n_genes)
@@ -240,6 +248,7 @@ class SingleCellDataset(Dataset):
                 new_gene_targets[n, :] = gene_targets[n, :]
                 new_gene_vals[n, :] = gene_vals[n, :]
 
+        print(torch.max(new_cell_prop_vals), torch.max(new_gene_targets))
         return new_gene_vals, new_gene_targets, new_cell_prop_vals
 
     def __getitem__(self, idx: List[int]):
