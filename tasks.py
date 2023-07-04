@@ -22,9 +22,6 @@ class MSELoss(pl.LightningModule):
         self.task_cfg = task_cfg
         self.cell_properties = self.task_cfg["cell_properties"]
 
-        print("A", self.automatic_optimization)
-        print("B", self._automatic_optimization)
-
         # Functions and metrics
         self.mse = nn.MSELoss()
         if self.cell_properties is not None:
@@ -39,7 +36,6 @@ class MSELoss(pl.LightningModule):
                     weight = torch.from_numpy(
                         np.float32(np.minimum(1 / cell_prop["freq"], 25.0))
                     ) if task_cfg["balance_classes"] else None
-                    print("BAL", k, len(weight))
                     self.cell_prop_cross_ent[k] = nn.CrossEntropyLoss(weight=weight)
                     self.cell_prop_accuracy[k] = Accuracy(
                         task="multiclass", num_classes=len(cell_prop["values"]), average="macro",
@@ -97,7 +93,6 @@ class MSELoss(pl.LightningModule):
                     # class values of -1 will be masked out
                     idx = torch.where(cell_prop_targets[:, n] >= 0)[0]
                     if len(idx) > 0:
-                        print("AA", k, len(idx), cell_prop_pred[k].size(), cell_prop_targets[idx, n].size())
                         cell_prop_loss += self.cell_prop_cross_ent[k](
                             cell_prop_pred[k][idx], cell_prop_targets[idx, n].to(torch.int64)
                         )
