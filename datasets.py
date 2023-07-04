@@ -27,7 +27,7 @@ class SingleCellDataset(Dataset):
         rank_order: bool = False,
         scale_by_max: bool = False,
         pin_memory: bool = False,
-        same_latent_class: bool = True,
+        cell_prop_same_ids: bool = False,
         max_cell_prop_val: float = 999,
     ):
 
@@ -54,7 +54,7 @@ class SingleCellDataset(Dataset):
         self.rank_order = rank_order
         self.scale_by_max = scale_by_max
         self.pin_memory = pin_memory
-        self.same_latent_class = same_latent_class
+        self.cell_prop_same_ids = cell_prop_same_ids
         self.max_cell_prop_val = max_cell_prop_val
 
         self.offset = 2 * self.n_genes  # FP16 is 2 bytes
@@ -70,7 +70,7 @@ class SingleCellDataset(Dataset):
         the cell property ids if requested"""
         gene_ids = torch.arange(0, self.n_genes).repeat(self.batch_size, 1)
         if self.n_cell_properties > 0:
-            if self.same_latent_class:
+            if self.cell_prop_same_ids:
                 # this will project all the class related latent info onto the same subspace, simplifying analysis
                 cell_prop_ids = torch.zeros((self.batch_size, self.n_cell_properties), dtype=torch.int64)
             else:
@@ -151,9 +151,10 @@ class SingleCellDataset(Dataset):
             gene_vals[n, :] = np.memmap(
                 self.data_path, dtype='float16', mode='r', shape=(self.n_genes,), offset=i * self.offset
             ).astype(np.float32)
-
-            if self.scale_by_max:
-                gene_vals[n, :] /= (1e-9 + self.metadata["stats"]["max"])
+            if self.rank_order:
+                gene_vals[n, :] = self._rank_order(gene_vals[n, :])
+                if self.scale_by_max:
+                    gene_vals[n, :] /= (1e-9 + self.metadata["stats"]["max"])
             elif self.normalize_total or self.log_normalize:
                 gene_vals[n, :] = self._normalize(gene_vals[n, :])
 
@@ -161,6 +162,21 @@ class SingleCellDataset(Dataset):
         gene_vals = torch.from_numpy(gene_vals)
         # return two copies since we'll modify gene_vals but keep gene_targets as is
         return gene_vals, gene_vals, zero_idx
+
+    def _rank_order(self, x: np.ndarray) -> np.ndarray:
+        """Expression values of 0 are mapped to 0. Expression values > 0 will be mapped to the percentage of
+        non-zero genes they're greater than"""
+        cell_rank = np.zeros_like(x)
+        vals, counts = np.unique(x, return_counts=True)
+        counts = counts[vals > 0]
+        vals = vals[vals > 0]
+        total_sum = np.sum(counts)
+        for val, count in zip(vals, counts):
+            s = np.sum(counts[val > vals]) / total_sum
+            idx = np.where(x == val)[0]
+            cell_rank[idx] = np.clip(s, 0.01, 1.0)
+
+        return cell_rank
 
     def _normalize(self, x: np.ndarray) -> np.ndarray:
 
@@ -346,6 +362,7 @@ class DataModule(pl.LightningDataModule):
         n_mask: int = 100,
         rank_order: bool = False,
         cell_properties: Optional[Dict[str, Any]] = None,
+        cell_prop_same_ids: bool = False,
 
     ):
         super().__init__()
@@ -358,6 +375,7 @@ class DataModule(pl.LightningDataModule):
         self.n_mask = n_mask
         self.rank_order = rank_order
         self.cell_properties = cell_properties
+        self.cell_prop_same_ids = cell_prop_same_ids
 
     def setup(self, stage):
 
@@ -369,6 +387,7 @@ class DataModule(pl.LightningDataModule):
             batch_size=self.batch_size,
             rank_order=self.rank_order,
             pin_memory=False,
+            cell_prop_same_ids=self.cell_prop_same_ids,
         )
         self.val_dataset = SingleCellDataset(
             self.test_data_path,
@@ -378,6 +397,7 @@ class DataModule(pl.LightningDataModule):
             batch_size=self.batch_size,
             rank_order=self.rank_order,
             pin_memory=False,
+            cell_prop_same_ids=self.cell_prop_same_ids,
         )
         self.n_genes = self.train_dataset.n_genes
         print(f"number of genes {self.n_genes}")
@@ -436,6 +456,7 @@ class DataModuleAnndata(pl.LightningDataModule):
         gene_min_pct_threshold: float = 0.02,
         min_genes_per_cell: int = 1000,
         train_pct: float = 0.9,
+        same_latent_class: bool = False,
     ):
         super().__init__()
 
@@ -449,6 +470,7 @@ class DataModuleAnndata(pl.LightningDataModule):
         self.gene_min_pct_threshold = gene_min_pct_threshold
         self.min_genes_per_cell = min_genes_per_cell
         self.train_pct = train_pct
+        self.same_latent_class = same_latent_class
 
         self._train_test_splits()
         self._get_gene_index()
@@ -466,6 +488,7 @@ class DataModuleAnndata(pl.LightningDataModule):
             batch_size=self.batch_size,
             rank_order=self.rank_order,
             pin_memory=False,
+            same_latent_class=same_latent_class,
         )
         self.val_dataset = AnnDataset(
             self.anndata,
@@ -478,6 +501,7 @@ class DataModuleAnndata(pl.LightningDataModule):
             batch_size=self.batch_size,
             rank_order=self.rank_order,
             pin_memory=False,
+            same_latent_class=same_latent_class,
         )
         self.n_genes = self.train_dataset.n_genes
         print(f"number of genes {self.n_genes}")

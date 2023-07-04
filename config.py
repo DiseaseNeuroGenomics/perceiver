@@ -23,32 +23,34 @@ dataset_cfg = {
     #"train_metadata_path": "/sc/arion/projects/psychAD/massen06/mssm_raw_data/train_metadata.pkl",
     #"test_data_path": "/sc/arion/projects/psychAD/massen06/rush_raw_data/train_data.dat",
     #"test_metadata_path": "/sc/arion/projects/psychAD/massen06/rush_raw_data/train_metadata.pkl",
-    #"train_data_path": "/home/masse/work/perceiver/rush_raw_data/test_data.dat",
-    #"train_metadata_path": "/home/masse/work/perceiver/rush_raw_data/test_metadata.pkl",
-    #"test_data_path": "/home/masse/work/perceiver/rush_raw_data/test_data.dat",
-    #"test_metadata_path": "/home/masse/work/perceiver/rush_raw_data/test_metadata.pkl",
+    #"train_data_path": "/home/masse/work/perceiver/mssm_raw_data/test_data.dat",
+    #"train_metadata_path": "/home/masse/work/perceiver/mssm_raw_data/test_metadata.pkl",
+    #"test_data_path": "/home/masse/work/perceiver/mssm_raw_data/test_data.dat",
+    #"test_metadata_path": "/home/masse/work/perceiver/mssm_raw_data/test_metadata.pkl",
     "cell_properties": cell_properties,
     "batch_size": 64,
     "num_workers": 10,
     "n_mask": 200,
-    "rank_order": False,
+    "rank_order": True,
+    "cell_prop_same_ids": False,
 }
 
 trainer_cfg = {
     "accumulate_grad_batches": 1,
     "precision": "bf16-mixed",
     "grad_clip_value": 0.5,
-    "n_devices": 2,
+    "n_devices": 1,
 }
 
 task_cfg = {
     # "classify": True,
-    "learning_rate": 0.1,
+    "learning_rate": 0.0001,
     "weight_decay": 0.00001,
     "warmup_steps": 12_000,
     "decay_steps": 100_000,
     "decay": 0.999988,
     "balance_classes": True,
+    "adverserial": False,
 
 }
 
@@ -56,7 +58,7 @@ model_cfg = {
     "seq_dim": 512,
     "query_len": 64,
     "query_dim": 512,
-    "n_layers": 10,
+    "n_layers": 12,
     "dim_feedforward": 1024,
     "n_heads": 2,
     "dropout": 0.0,

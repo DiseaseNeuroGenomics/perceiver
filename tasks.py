@@ -22,6 +22,9 @@ class MSELoss(pl.LightningModule):
         self.task_cfg = task_cfg
         self.cell_properties = self.task_cfg["cell_properties"]
 
+        print("A", self.automatic_optimization)
+        print("B", self._automatic_optimization)
+
         # Functions and metrics
         self.mse = nn.MSELoss()
         if self.cell_properties is not None:
@@ -36,6 +39,7 @@ class MSELoss(pl.LightningModule):
                     weight = torch.from_numpy(
                         np.float32(np.minimum(1 / cell_prop["freq"], 25.0))
                     ) if task_cfg["balance_classes"] else None
+                    print("BAL", k, len(weight))
                     self.cell_prop_cross_ent[k] = nn.CrossEntropyLoss(weight=weight)
                     self.cell_prop_accuracy[k] = Accuracy(
                         task="multiclass", num_classes=len(cell_prop["values"]), average="macro",
@@ -54,6 +58,19 @@ class MSELoss(pl.LightningModule):
         self.metrics = MetricCollection([ExplainedVariance()])
 
         self._create_results_dict()
+
+        print(f"automatic_optimization: {self.automatic_optimization}")
+
+    """
+    @property
+    def automatic_optimization(self) -> bool:
+        #return self._automatic_optimization
+        return False
+
+    @automatic_optimization.setter
+    def set_automatic_optimization(self, value: bool):
+        self._automatic_optimization = value
+    """
 
 
     def _create_results_dict(self):
@@ -79,16 +96,19 @@ class MSELoss(pl.LightningModule):
                     # discrete variable, use cross entropy
                     # class values of -1 will be masked out
                     idx = torch.where(cell_prop_targets[:, n] >= 0)[0]
-                    cell_prop_loss += self.cell_prop_cross_ent[k](
-                        cell_prop_pred[k][idx], cell_prop_targets[idx, n].to(torch.int64)
-                    )
+                    if len(idx) > 0:
+                        print("AA", k, len(idx), cell_prop_pred[k].size(), cell_prop_targets[idx, n].size())
+                        cell_prop_loss += self.cell_prop_cross_ent[k](
+                            cell_prop_pred[k][idx], cell_prop_targets[idx, n].to(torch.int64)
+                        )
                 else:
                     # continuous variable, use MSE
                     # class values less than -999 or greater than 999 will be masked out
                     idx = torch.where(cell_prop_targets[:, n] > -999)[0]
-                    cell_prop_loss += self.cell_prop_mse[k](
-                        cell_prop_pred[k][idx], cell_prop_targets[idx, n]
-                    )
+                    if len(idx) > 0:
+                        cell_prop_loss += self.cell_prop_mse[k](
+                            cell_prop_pred[k][idx], cell_prop_targets[idx, n]
+                        )
 
         # TODO: fit this
         alpha = 1.0
@@ -201,16 +221,17 @@ class AdverserialLoss(MSELoss):
         task_cfg,
         adv_cell_prop: str = "SubID",
         adv_loss_ratio: float = 0.025,
+        adv_threshold: float = 6.0,
         **kwargs
     ):
         # Initialize superclass
-        super().__init__(network, task_cfg, **kwargs)
+        super().__init__(network, task_cfg, automatic_optimization=False, **kwargs)
         print("ADV LOSS COEFF", adv_loss_ratio)
-        self.automatic_optimization = False
-        self.network_params = [p for n, p in self.network.named_parameters() if "SubID" not in n]
-        self.adv_params = [p for n, p in self.network.named_parameters() if "SubID" in n]
+        self.network_params = [p for n, p in self.network.named_parameters() if self.adv_cell_prop not in n]
+        self.adv_params = [p for n, p in self.network.named_parameters() if self.adv_cell_prop in n]
         self.adv_cell_prop = adv_cell_prop
         self.adv_loss_ratio = adv_loss_ratio
+        self.adv_threshold = adv_threshold
 
         self.adv_accuracy = nn.ModuleDict()
         self.adv_accuracy[adv_cell_prop] = Accuracy(
@@ -228,28 +249,34 @@ class AdverserialLoss(MSELoss):
         )
 
         gene_loss = self.mse(gene_pred, gene_targets.unsqueeze(2))
-        cell_prop_loss = 0
-        adv_loss = 0
+        cell_prop_loss = 0.0
+        adv_loss = 0.0
 
         for n, (k, cell_prop) in enumerate(self.cell_properties.items()):
-            alpha = - self.adv_loss_ratio if k == self.adv_cell_prop else 1.0
+
             if cell_prop["discrete"]:
                 # discrete variable, use cross entropy
                 # class values of -1 will be masked out
                 idx = torch.where(cell_prop_targets[:, n] >= 0)[0]
-                cell_prop_loss += alpha * self.cell_prop_cross_ent[k](
+                p_loss = self.cell_prop_cross_ent[k](
                     cell_prop_pred[k][idx], cell_prop_targets[idx, n].to(torch.int64)
                 )
-                if k == self.adv_cell_prop:
-                    # calculate gradient for the MLP projecting to adv_cell_prop (e.g. "SubID")
-                    opt1.zero_grad()
-                    adv_loss = self.cell_prop_cross_ent[self.adv_cell_prop](
-                        cell_prop_pred[self.adv_cell_prop][idx], cell_prop_targets[idx, n].to(torch.int64)
-                    )
-                    self.manual_backward(adv_loss, retain_graph=True)
 
-                    # TODO: currently not displaying accuracy, only the loss
-                    self.adv_accuracy[self.adv_cell_prop].update(cell_prop_pred[k][idx], cell_prop_targets[idx, n])
+                if k == self.adv_cell_prop:
+                    if p_loss < self.adv_threshold:
+                        cell_prop_loss -= self.adv_loss_ratio * p_loss
+                    opt1.zero_grad()
+                    self.manual_backward(p_loss, retain_graph=True)
+                    self.log(
+                        "adv_acc", p_loss,
+                        on_step=True,
+                        on_epoch=True,
+                        prog_bar=True,
+                        sync_dist=True,
+                    )
+                else:
+                    cell_prop_loss += p_loss
+
             else:
                 # continuous variable, use MSE
                 # class values less than -999 or greater than 999 will be masked out
@@ -258,10 +285,7 @@ class AdverserialLoss(MSELoss):
                     cell_prop_pred[k][idx], cell_prop_targets[idx, n]
                 )
 
-        # TODO: fit this
-        alpha = 1.0
-        beta = 1.0
-        loss = alpha * gene_loss + beta * cell_prop_loss
+        loss = gene_loss + cell_prop_loss
 
         opt0.zero_grad()
         self.manual_backward(loss)
@@ -292,7 +316,6 @@ class AdverserialLoss(MSELoss):
             sync_dist=True,
         )
 
-        return loss
 
     def on_train_epoch_end(self):
         """Need to manually save checkpoints as automatic checkpointing is disabled for some reason..."""

@@ -23,7 +23,7 @@ def check_train_test_set(cfg):
     train_test_inter = train_ids.intersection(test_ids)
     print(f"Number of train users in test set: {len(train_test_inter)}")
 
-def main(adverserial: bool = True):
+def main(adverserial: bool = False):
 
     # Set seed
     pl.seed_everything(2299)
@@ -66,4 +66,4 @@ def main(adverserial: bool = True):
 
 if __name__ == "__main__":
 
-    main()
+    main(task_cfg["adverserial"])
