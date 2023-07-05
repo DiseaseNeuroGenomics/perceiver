@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import os
 import torch
@@ -12,6 +12,7 @@ from torch.utils.data import (
     RandomSampler,
     BatchSampler,
     SequentialSampler,
+    Subset,
 )
 
 class SingleCellDataset(Dataset):
@@ -38,7 +39,10 @@ class SingleCellDataset(Dataset):
         self.cell_properties = cell_properties
         self.n_samples = len(self.metadata["obs"]["class"])
         print(f"Number of cells {self.n_samples}")
-        self.n_genes = len(self.metadata["var"])
+        if "gene_name" in self.metadata["var"].keys():
+            self.n_genes = len(self.metadata["var"]["gene_name"])
+        else:
+            self.n_genes = len(self.metadata["var"])
         self.n_cell_properties = len(cell_properties) if cell_properties is not None else 0
         self.n_mask = n_mask
         self.batch_size = batch_size
@@ -64,7 +68,6 @@ class SingleCellDataset(Dataset):
         self.offset = 2 * self.n_genes  # FP16 is 2 bytes
         self._get_cell_prop_info()
         self._create_gene_cell_prop_ids()
-
 
     def __len__(self):
         return self.n_samples
@@ -108,10 +111,9 @@ class SingleCellDataset(Dataset):
                     # remove nans, negative values, or anything else suspicious
                     idx = [
                         n for n, u in enumerate(unique_list) if (
-                            isinstance(u, str) or np.abs(u) < self.max_cell_prop_val
+                            isinstance(u, str) or (u >= 0 and u < self.max_cell_prop_val)
                         )
                     ]
-
                     self.cell_properties[k]["values"] = unique_list[idx]
                     self.cell_properties[k]["freq"] = counts[idx] / np.mean(counts[idx])
 
@@ -426,6 +428,7 @@ class DataModule(pl.LightningDataModule):
         cell_properties: Optional[Dict[str, Any]] = None,
         cell_prop_same_ids: bool = False,
         cutmix_pct: float = 0.5,
+        subset_data_info: Optional[Tuple[str, List[str]]] = None,
     ):
         super().__init__()
         self.train_data_path = train_data_path
@@ -439,6 +442,9 @@ class DataModule(pl.LightningDataModule):
         self.cell_properties = cell_properties
         self.cell_prop_same_ids = cell_prop_same_ids
         self.cutmix_pct = cutmix_pct
+        # subset_data_info is a Tuple of two elements, first element indicate obs, second element desired values
+        # e.g. ("class", ["EN", "Oligo"]) will select only cells whose class = "Oligo" or "EM"
+        self.subset_data_info = subset_data_info
 
     def setup(self, stage):
 
@@ -464,8 +470,26 @@ class DataModule(pl.LightningDataModule):
             cell_prop_same_ids=self.cell_prop_same_ids,
             cutmix_pct=0.0,
         )
+
+        # ['Astro', 'EN', 'Endo', 'IN', 'Immune', 'Mural', 'OPC', 'Oligo']
+        if self.subset_data_info is not None:
+            self._subset_data()
+
         self.n_genes = self.train_dataset.n_genes
         print(f"number of genes {self.n_genes}")
+
+
+
+    def _subset_data(self):
+
+        train_meta = pickle.load(open(self.train_metadata_path, "rb"))
+        test_meta = pickle.load(open(self.test_metadata_path, "rb"))
+
+        k = self.subset_data_info[0] # observation key (e.g. "class")
+        target = self.subset_data_info[1] # desired values (e.g. ["EN", "Oligo"])
+        self.idx_train = [n for n, prop in enumerate(train_meta["obs"][k]) if prop in target]
+        self.idx_test = [n for n, prop in enumerate(test_meta["obs"][k]) if prop in target]
+
 
     # return the dataloader for each split
     def train_dataloader(self):
@@ -486,12 +510,12 @@ class DataModule(pl.LightningDataModule):
 
     def val_dataloader(self):
         sampler = BatchSampler(
-            RandomSampler(self.val_dataset),
+            RandomSampler(Subset(self.val_dataset, self.idx_test)),
             batch_size=self.val_dataset.batch_size,
             drop_last=True,
         )
         dl = DataLoader(
-            self.val_dataset,
+            Subset(self.val_dataset, self.idx_test),
             batch_size=None,
             batch_sampler=None,
             sampler=sampler,
