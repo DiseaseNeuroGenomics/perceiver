@@ -4,6 +4,7 @@ import os
 import pickle
 import numpy as np
 import scanpy as sc
+from anndata.experimental.multi_files import AnnCollection
 
 
 class CreateData:
@@ -14,7 +15,7 @@ class CreateData:
 
     def __init__(
         self,
-        source_fn: str,
+        source_paths: List[str],
         target_path: str,
         train_pct: float = 0.9,
         rank_order: bool = False,
@@ -24,7 +25,7 @@ class CreateData:
         min_percent_cells_per_gene: float = 0.02,
         split_train_test_by_subject: bool = True,
     ):
-        self.source_fn = source_fn
+        self.source_paths = source_paths
         self.target_path = target_path
         self.train_pct = train_pct
         self.rank_order = rank_order
@@ -39,13 +40,18 @@ class CreateData:
         self.split_train_test_by_subject = split_train_test_by_subject
 
         self.obs_keys = [
-            'CERAD', 'BRAAK_AD', 'Dementia', 'AD', 'class', 'subclass', 'subtype', 'ApoE_gt',
-            'Sex', 'Head_Injury', 'Vascular', 'Age', 'Epilepsy', 'Seizures', 'Tumor',
+            'CERAD', 'BRAAK_AD', 'BRAAK_PD', 'Dementia', 'AD', 'class', 'subclass', 'subtype', 'ApoE_gt',
+            'Sex', 'Head_Injury', 'Vascular', 'Age', 'Epilepsy', 'Seizures', 'Tumor', 'PD', 'ALS',
             'CDRScore', 'PMI', 'Cognitive_Resilience', 'Cognitive_and_Tau_Resilience', 'SubID',
+            'snRNAseq_ID', 'SCZ', 'MDD', 'Brain_bank',
         ]
         self.var_keys = ['gene_id', 'gene_name', 'gene_type']
 
-        self.anndata = sc.read_h5ad(source_fn, 'r')
+        if len(source_paths) == 1:
+            self.anndata = sc.read_h5ad(source_paths[0], 'r')
+        else:
+            temp = [sc.read_h5ad(fn, 'r') for fn in source_paths]
+            self.anndata = AnnCollection(temp, join_vars='inner', join_obs='inner')
 
         self._get_cell_index()
         self._get_gene_index()
@@ -227,8 +233,12 @@ class CreateData:
 
 if __name__ == "__main__":
 
-    source_path = "/sc/arion/projects/psychAD/NPS-AD/freeze2_rc/h5ad_final/FULL_2023-06-08_23_53_original.h5ad"
-    target_path = "/sc/arion/projects/psychAD/massen06/perceiver_data"
+    base_dir = "/sc/arion/projects/psychAD/NPS-AD/freeze2_rc/h5ad_final/"
+    source_paths = [
+        base_dir + "RUSH_2023-06-08_21_44.h5ad",
+        base_dir + "MSSM_2023-06-08_22_31.h5ad",
+    ]
+    target_path = "/sc/arion/projects/psychAD/massen06/mssm_rush_data"
     c = CreateData(source_path, target_path, train_pct=0.9, rank_order=False)
 
     c.create_datasets()
