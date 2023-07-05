@@ -124,8 +124,6 @@ class MSELoss(pl.LightningModule):
             gene_ids, gene_target_ids, cell_prop_ids, gene_vals, key_padding_mask,
         )
 
-        cell_prop_targets = cell_prop_targets[:, :, 0]
-
         self.gene_explained_var(gene_pred, gene_targets.unsqueeze(2))
 
         if self.cell_properties is not None:
@@ -133,18 +131,20 @@ class MSELoss(pl.LightningModule):
                 if cell_prop["discrete"]:
                     predict_idx = torch.argmax(cell_prop_pred[k], dim=-1)
                     # property values of -1 will be masked out
-                    idx = torch.where(cell_prop_targets[:, n] >= 0)[0]
+                    idx = torch.where(cell_prop_targets[:, n, 0] >= 0)[0]
                     if len(idx) > 0:
+                        targets = torch.argmax(cell_prop_targets[idx, n, :], dim=-1).to(torch.int64)
                         self.cell_prop_accuracy[k].update(
-                            predict_idx[idx], cell_prop_targets[idx, n]
+                            predict_idx[idx], targets
                         )
-                    self.results[k].append(cell_prop_targets[:, n].detach().cpu().numpy())
+                    targets = torch.argmax(cell_prop_targets[:, n, :], dim=-1).to(torch.int64)
+                    self.results[k].append(targets.detach().cpu().numpy())
                     self.results["pred_" + k].append(predict_idx.detach().cpu().numpy())
                 else:
                     # property values < -999  will be masked out
-                    idx = torch.where(cell_prop_targets[:, n] > - 999)[0]
+                    idx = torch.where(cell_prop_targets[:, n, 0] > - 999)[0]
                     self.cell_prop_explained_var[k].update(
-                        cell_prop_pred[k][idx], cell_prop_targets[idx, n]
+                        cell_prop_pred[k][idx], cell_prop_targets[idx, n, 0]
                     )
                     self.results[k].append(cell_prop_targets[:, n].detach().cpu().numpy())
                     self.results["pred_" + k].append(cell_prop_pred[k][idx].detach().cpu().to(torch.float32).numpy())
