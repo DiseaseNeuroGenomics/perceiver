@@ -208,7 +208,7 @@ class SingleCellDataset(Dataset):
 
         return gene_vals, key_padding_mask, gene_targets, cell_prop_vals
 
-    def _cutmix(self, gene_vals, gene_targets, cell_prop_vals):
+    def _cutmix(self, gene_vals, gene_targets, cell_prop_vals, continuous_block: bool = False):
 
         # determine the cells with no missing values
         p = cell_prop_vals[:, :, 0].detach().numpy()
@@ -225,11 +225,17 @@ class SingleCellDataset(Dataset):
                 j = np.random.choice(list(good_set.difference(set([n]))))
                 # set mix percentage
                 alpha = np.random.uniform(0.1, 0.9)
+
                 # mix-up gene values
-                start_idx = np.random.randint(0, int(alpha * self.n_genes) - 1)
-                end_idx = start_idx + int((1 - alpha) * self.n_genes)
                 new_gene_vals[n, :] = gene_vals[n, :]
-                new_gene_vals[n, start_idx : end_idx] = gene_vals[j, start_idx: end_idx]
+                if continuous_block:
+                    start_idx = np.random.randint(0, int(alpha * self.n_genes) - 1)
+                    end_idx = start_idx + int((1 - alpha) * self.n_genes)
+                    new_gene_vals[n, :] = gene_vals[n, :]
+                    new_gene_vals[n, start_idx : end_idx] = gene_vals[j, start_idx: end_idx]
+                else:
+                    idx_mix = np.random.choice(self.n_genes, int(alpha * self.n_genes), replace=False)
+                    new_gene_vals[n, idx_mix] = gene_vals[j, idx_mix]
 
                 # ensure it has enough non-zero entries if not; then revert
                 if torch.sum(new_gene_vals[n, :] > 0) < self.n_mask:
@@ -248,7 +254,6 @@ class SingleCellDataset(Dataset):
                 new_gene_targets[n, :] = gene_targets[n, :]
                 new_gene_vals[n, :] = gene_vals[n, :]
 
-        print(torch.max(new_cell_prop_vals), torch.max(new_gene_targets))
         return new_gene_vals, new_gene_targets, new_cell_prop_vals
 
     def __getitem__(self, idx: List[int]):
