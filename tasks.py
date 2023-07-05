@@ -34,7 +34,7 @@ class MSELoss(pl.LightningModule):
                 if cell_prop["discrete"]:
                     # discrete variable, set up cross entropy module
                     weight = torch.from_numpy(
-                        np.float32(np.minimum(1 / cell_prop["freq"], 25.0))
+                        np.float32(np.clip(1 / cell_prop["freq"], 0.0, 20.0))
                     ) if task_cfg["balance_classes"] else None
                     self.cell_prop_cross_ent[k] = nn.CrossEntropyLoss(weight=weight)
                     self.cell_prop_accuracy[k] = Accuracy(
@@ -85,7 +85,7 @@ class MSELoss(pl.LightningModule):
         p_dims = [len(p["values"]) for p in self.cell_properties.values()]
 
         gene_loss = self.mse(gene_pred, gene_targets.unsqueeze(2))
-        cell_prop_loss = 0
+        cell_prop_loss = 0.0
 
         if self.cell_properties is not None:
             for n, (k, cell_prop) in enumerate(self.cell_properties.items()):
@@ -124,6 +124,8 @@ class MSELoss(pl.LightningModule):
             gene_ids, gene_target_ids, cell_prop_ids, gene_vals, key_padding_mask,
         )
 
+        p_dims = [len(p["values"]) for p in self.cell_properties.values()]
+
         self.gene_explained_var(gene_pred, gene_targets.unsqueeze(2))
 
         if self.cell_properties is not None:
@@ -133,13 +135,13 @@ class MSELoss(pl.LightningModule):
                     # property values of -1 will be masked out
                     idx = torch.where(cell_prop_targets[:, n, 0] >= 0)[0]
                     if len(idx) > 0:
-                        targets = torch.argmax(cell_prop_targets[idx, n, :], dim=-1).to(torch.int64)
+                        targets = torch.argmax(cell_prop_targets[idx, n, :p_dims[n]], dim=-1).to(torch.int64)
                         self.cell_prop_accuracy[k].update(
                             predict_idx[idx], targets
                         )
-                    targets = torch.argmax(cell_prop_targets[:, n, :], dim=-1).to(torch.int64)
+                    targets = torch.argmax(cell_prop_targets[:, n, :p_dims[n]], dim=-1).to(torch.int64)
                     self.results[k].append(targets.detach().cpu().numpy())
-                    self.results["pred_" + k].append(predict_idx.detach().cpu().numpy())
+                    self.results["pred_" + k].append(cell_prop_pred[k][:, :p_dims[n]].detach().to(torch.float32).cpu().numpy())
                 else:
                     # property values < -999  will be masked out
                     idx = torch.where(cell_prop_targets[:, n, 0] > - 999)[0]
