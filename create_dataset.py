@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import Any, List, Optional
 
 import os
 import pickle
@@ -65,12 +65,12 @@ class CreateData:
 
     def _quality_check(self, data: List[Any]):
         """Ensure that the first two Anndata objects have matching gene names and percent cells"""
-        vars = ["gene_names", "percent_cells"]
+        vars = ["gene_name", "percent_cells"]
         for v in vars:
             match = [g0 == g1 for g0, g1 in zip(data[0].var[v], data[1].var[v])]
             assert np.mean(np.array(match)) == 1, f"{v} DID NOT MATCH match between the first two datasets"
 
-            print(f"{v} DID NOT MATCH match between the first two datasets")
+            print(f"{v} matched between the first two datasets")
 
     def _train_test_splits(self):
 
@@ -81,7 +81,7 @@ class CreateData:
             train_ids = sub_ids[: int(n * self.train_pct)]
             test_ids = sub_ids[int(n * self.train_pct):]
             self.train_idx = [n for n, s_id in enumerate(self.anndata.obs["SubID"].values) if s_id in train_ids]
-            self.train_idx = [n for n, s_id in enumerate(self.anndata.obs["SubID"].values) if s_id in test_ids]
+            self.test_idx = [n for n, s_id in enumerate(self.anndata.obs["SubID"].values) if s_id in test_ids]
             print(
                 f"Splitting the train/test set by SubID. "
                 f"{len(train_ids)} subjects in train set; {len(test_ids)} subjects in test set"
@@ -149,6 +149,7 @@ class CreateData:
 
         meta = {
             "obs": {k: self.anndata.obs[k][idx].values for k in self.obs_keys},
+            "var": {k: self.anndata.var[k].values for k in self.var_keys},
             "stats": {
                 "mean": self.mean,
                 "std": self.std,
@@ -161,10 +162,12 @@ class CreateData:
             },
         }
 
+        """
         if "gene_name" in self.anndata.var.keys():
             meta["var"] = self.anndata.var["gene_name"][self.gene_idx]
         else:
             meta["var"] = self.anndata.var[self.gene_idx]
+        """
 
         pickle.dump(meta, open(meatadata_fn, "wb"))
 
