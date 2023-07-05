@@ -234,7 +234,6 @@ def load_model(model_save_path, model):
     ckpt = torch.load(model_save_path)
     key = "state_dict" if "state_dict" in ckpt else "model_state_dict"
     for k, v in ckpt[key].items():
-
         if "cell_property" in k:
             non_network_params.append(k)
         elif "network" in k:
