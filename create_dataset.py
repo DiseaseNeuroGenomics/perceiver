@@ -45,21 +45,34 @@ class CreateData:
             'CDRScore', 'PMI', 'Cognitive_Resilience', 'Cognitive_and_Tau_Resilience', 'SubID',
             'snRNAseq_ID', 'SCZ', 'MDD', 'Brain_bank',
         ]
-        self.var_keys = ['gene_id', 'gene_name', 'gene_type']
+        self.var_keys = [
+            'gene_id', 'gene_name', 'gene_type',  'robust', 'highly_variable_features', 'ribosomal',
+            'mitochondrial', 'protein_coding', 'mitocarta_genes', 'robust_protein_coding',
+        ]
 
         if len(source_paths) == 1:
             self.anndata = sc.read_h5ad(source_paths[0], 'r')
         else:
             temp = [sc.read_h5ad(fn, 'r') for fn in source_paths]
+            self._quality_check(temp)
             self.anndata = AnnCollection(temp, join_vars='inner', join_obs='inner')
+            self.anndata.var = temp[0].var
 
         self._get_cell_index()
         self._get_gene_index()
 
         print(f"Size of anndata {self.anndata.shape[0]}")
 
+    def _quality_check(self, data: List[Any]):
+        """Ensure that the first two Anndata objects have matching gene names and percent cells"""
+        vars = ["gene_names", "percent_cells"]
+        for v in vars:
+            match = [g0 == g1 for g0, g1 in zip(data[0].var[v], data[1].var[v])]
+            assert np.mean(np.array(match)) == 1, f"{v} DID NOT MATCH match between the first two datasets"
+
+            print(f"{v} DID NOT MATCH match between the first two datasets")
+
     def _train_test_splits(self):
-        # TODO: might want to make split by subjects
 
         if self.split_train_test_by_subject:
             sub_ids = np.unique(self.anndata.obs["SubID"].values)
@@ -239,7 +252,7 @@ if __name__ == "__main__":
         base_dir + "MSSM_2023-06-08_22_31.h5ad",
     ]
     target_path = "/sc/arion/projects/psychAD/massen06/mssm_rush_data"
-    c = CreateData(source_path, target_path, train_pct=0.9, rank_order=False)
+    c = CreateData(source_paths, target_path, train_pct=0.9, rank_order=False)
 
     c.create_datasets()
 
