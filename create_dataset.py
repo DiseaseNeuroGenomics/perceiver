@@ -149,7 +149,7 @@ class CreateData:
 
         meta = {
             "obs": {k: self.anndata.obs[k][idx].values for k in self.obs_keys},
-            "var": {k: self.anndata.var[k].values for k in self.var_keys},
+            "var": {k: self.anndata.var[k][self.gene_idx].values for k in self.var_keys},
             "stats": {
                 "mean": self.mean,
                 "std": self.std,
@@ -161,13 +161,6 @@ class CreateData:
                 "rank_order": self.rank_order,
             },
         }
-
-        """
-        if "gene_name" in self.anndata.var.keys():
-            meta["var"] = self.anndata.var["gene_name"][self.gene_idx]
-        else:
-            meta["var"] = self.anndata.var[self.gene_idx]
-        """
 
         pickle.dump(meta, open(meatadata_fn, "wb"))
 
@@ -183,7 +176,7 @@ class CreateData:
             gene_expression = []
 
             for i in start_idx:
-                x = self.anndata[int(i): int(i + chunk_size)].to_memory()
+                x = self.anndata[int(i): int(i + chunk_size)]
                 x = x.X.toarray()
                 gene_expression.append(np.mean(x > 0, axis=0))
 
@@ -211,7 +204,7 @@ class CreateData:
             m = np.minimum(len(idx), (n + 1) * chunk_size)
             current_idx = idx[n * chunk_size: m]
             print(f"Creating dataset, cell number = {current_idx[0]}")
-            y = self.anndata[current_idx].to_memory()
+            y = self.anndata[current_idx]
             y = y.X.toarray().astype(np.float32)
             y = y[:, self.gene_idx]
             if self.rank_order:
