@@ -30,7 +30,7 @@ class SingleCellDataset(Dataset):
         pin_memory: bool = False,
         cell_prop_same_ids: bool = False,
         max_cell_prop_val: float = 999,
-        cutmix_pct: float = 0.5,
+        cutmix_pct: float = 0.0,
         max_gene_val: float = 10.0,
     ):
 
