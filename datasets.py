@@ -225,7 +225,7 @@ class SingleCellDataset(Dataset):
                 # randomly choose partner
                 j = np.random.choice(list(good_set.difference(set([n]))))
                 # set mix percentage
-                alpha = np.random.uniform(0.1, 0.9)
+                alpha = np.random.uniform(0.005, 0.995)
 
                 # mix-up gene values
                 new_gene_vals[n, :] = gene_vals[n, :]
@@ -244,11 +244,9 @@ class SingleCellDataset(Dataset):
                     continue
 
                 # take the weighted average of the targets
-                new_cell_prop_vals[n, :] = alpha * cell_prop_vals[n, :] + (1 - alpha) * cell_prop_vals[j, :]
-                new_gene_targets[n, :] = alpha * gene_targets[n, :] + (1 - alpha) * gene_targets[j, :]
-                start_idx = np.random.randint(0, int(alpha * self.n_genes) - 1)
-                end_idx = start_idx + int((1 - alpha) * self.n_genes)
-                new_gene_vals[n, start_idx : end_idx] = gene_vals[j, start_idx : end_idx]
+                new_cell_prop_vals[n, :] = (1 - alpha) * cell_prop_vals[n, :] + alpha * cell_prop_vals[j, :]
+                new_gene_targets[n, :] = (1 - alpha) * gene_targets[n, :] + alpha * gene_targets[j, :]
+
 
             else:
                 new_cell_prop_vals[n, :] = cell_prop_vals[n, :]
