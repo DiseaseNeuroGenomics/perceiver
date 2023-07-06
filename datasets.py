@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import os
 import torch
@@ -122,7 +122,6 @@ class SingleCellDataset(Dataset):
                     idx = [n for n, u in enumerate(unique_list) if u in cell_prop["values"]]
                     self.cell_properties[k]["freq"] = counts[idx] / np.mean(counts[idx])
 
-                print(f"Cell property {k} freq size: {len(self.cell_properties[k]['freq'])}")
         else:
             self.cell_prop_dist = None
 
@@ -258,7 +257,10 @@ class SingleCellDataset(Dataset):
 
         return new_gene_vals, new_gene_targets, new_cell_prop_vals
 
-    def __getitem__(self, idx: List[int]):
+    def __getitem__(self, idx: Union[int, List[int]]):
+
+        if isinstance(idx, int):
+            idx = [idx]
 
         if len(idx) != self.batch_size:
             raise ValueError("Index length not equal to batch_size")
