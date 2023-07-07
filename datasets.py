@@ -31,6 +31,7 @@ class SingleCellDataset(Dataset):
         cell_prop_same_ids: bool = False,
         max_cell_prop_val: float = 999,
         cutmix_pct: float = 0.0,
+        mixup: bool = False,
         max_gene_val: float = 10.0,
     ):
 
@@ -63,6 +64,7 @@ class SingleCellDataset(Dataset):
         self.cell_prop_same_ids = cell_prop_same_ids
         self.max_cell_prop_val = max_cell_prop_val
         self.cutmix_pct = cutmix_pct
+        self.mixup = mixup
         self.max_gene_val = max_gene_val
 
         self.offset = 2 * self.n_genes  # FP16 is 2 bytes
@@ -200,7 +202,10 @@ class SingleCellDataset(Dataset):
         gene_vals, gene_targets = self._get_gene_vals(batch_idx)
         cell_prop_vals = self._get_cell_prop_vals(batch_idx)
 
-        if self.cutmix_pct > 0:
+        # If specified, perform data augmentation mixup or cutmix
+        if self.mixup:
+            gene_vals, gene_targets, cell_prop_vals = self._mixup(gene_vals, gene_targets, cell_prop_vals)
+        elif self.cutmix_pct > 0:
             gene_vals, gene_targets, cell_prop_vals = self._cutmix(gene_vals, gene_targets, cell_prop_vals)
 
         zero_idx = np.where(gene_vals == 0)
@@ -208,6 +213,37 @@ class SingleCellDataset(Dataset):
         key_padding_mask[zero_idx[0], zero_idx[1]] = 1.0
 
         return gene_vals, key_padding_mask, gene_targets, cell_prop_vals
+
+    def _mixup(self, gene_vals, gene_targets, cell_prop_vals):
+
+        # determine the cells with no missing values
+        p = cell_prop_vals[:, :, 0].detach().numpy()
+        good_idx = list(np.where(np.sum(p < -999, axis=1) == 0)[0])
+        good_set = set(good_idx)
+
+        new_cell_prop_vals = torch.zeros_like(cell_prop_vals)
+        new_gene_targets = torch.zeros_like(gene_targets)
+        new_gene_vals = torch.zeros_like(gene_vals)
+
+        for n in range(self.batch_size):
+            if n in good_idx:
+                # randomly choose partner
+                j = np.random.choice(list(good_set.difference(set([n]))))
+                # set mix percentage
+                alpha = np.random.rand() ** 2
+                new_gene_vals[n, :] = (1 - alpha) * gene_vals[n, :] + alpha * gene_vals[j, :]
+                print(alpha)
+
+                # take the weighted average of the targets
+                new_cell_prop_vals[n, :] = (1 - alpha) * cell_prop_vals[n, :] + alpha * cell_prop_vals[j, :]
+                new_gene_targets[n, :] = (1 - alpha) * gene_targets[n, :] + alpha * gene_targets[j, :]
+
+            else:
+                new_cell_prop_vals[n, :] = cell_prop_vals[n, :]
+                new_gene_targets[n, :] = gene_targets[n, :]
+                new_gene_vals[n, :] = gene_vals[n, :]
+
+        return new_gene_vals, new_gene_targets, new_cell_prop_vals
 
     def _cutmix(self, gene_vals, gene_targets, cell_prop_vals, continuous_block: bool = False):
 
@@ -427,7 +463,8 @@ class DataModule(pl.LightningDataModule):
         rank_order: bool = False,
         cell_properties: Optional[Dict[str, Any]] = None,
         cell_prop_same_ids: bool = False,
-        cutmix_pct: float = 0.5,
+        cutmix_pct: float = 0.0,
+        mixup: bool = False,
         subset_data_info: Optional[Tuple[str, List[str]]] = None,
     ):
         super().__init__()
@@ -442,6 +479,7 @@ class DataModule(pl.LightningDataModule):
         self.cell_properties = cell_properties
         self.cell_prop_same_ids = cell_prop_same_ids
         self.cutmix_pct = cutmix_pct
+        self.mixup = mixup
         # subset_data_info is a Tuple of two elements, first element indicate obs, second element desired values
         # e.g. ("class", ["EN", "Oligo"]) will select only cells whose class = "Oligo" or "EM"
         self.subset_data_info = subset_data_info
@@ -458,6 +496,8 @@ class DataModule(pl.LightningDataModule):
             pin_memory=False,
             cell_prop_same_ids=self.cell_prop_same_ids,
             cutmix_pct=self.cutmix_pct,
+            mixup=self.mixup,
+
         )
         self.val_dataset = SingleCellDataset(
             self.test_data_path,
@@ -469,26 +509,11 @@ class DataModule(pl.LightningDataModule):
             pin_memory=False,
             cell_prop_same_ids=self.cell_prop_same_ids,
             cutmix_pct=0.0,
+            mixup=False,
         )
-
-        # ['Astro', 'EN', 'Endo', 'IN', 'Immune', 'Mural', 'OPC', 'Oligo']
-        if self.subset_data_info is not None:
-            self._subset_data()
 
         self.n_genes = self.train_dataset.n_genes
         print(f"number of genes {self.n_genes}")
-
-
-
-    def _subset_data(self):
-
-        train_meta = pickle.load(open(self.train_metadata_path, "rb"))
-        test_meta = pickle.load(open(self.test_metadata_path, "rb"))
-
-        k = self.subset_data_info[0] # observation key (e.g. "class")
-        target = self.subset_data_info[1] # desired values (e.g. ["EN", "Oligo"])
-        self.idx_train = [n for n, prop in enumerate(train_meta["obs"][k]) if prop in target]
-        self.idx_test = [n for n, prop in enumerate(test_meta["obs"][k]) if prop in target]
 
 
     # return the dataloader for each split
@@ -510,12 +535,12 @@ class DataModule(pl.LightningDataModule):
 
     def val_dataloader(self):
         sampler = BatchSampler(
-            RandomSampler(Subset(self.val_dataset, self.idx_test)),
+            RandomSampler(self.val_dataset),
             batch_size=self.val_dataset.batch_size,
             drop_last=True,
         )
         dl = DataLoader(
-            Subset(self.val_dataset, self.idx_test),
+            self.val_dataset,
             batch_size=None,
             batch_sampler=None,
             sampler=sampler,
