@@ -6,7 +6,20 @@ from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 import pytorch_lightning as pl
 from torchmetrics import MetricCollection, ExplainedVariance
 from torchmetrics.classification import Accuracy
+import torch.nn.functional as F
 
+
+class FocalLoss(nn.Module):
+    def __init__(self, gamma: float = 2.0):
+        super().__init__()
+        self.gamma = gamma
+
+    def forward(self, input, target):
+
+        log_prob = F.log_softmax(input, dim=-1)
+        prob = torch.exp(log_prob)
+        loss = - target * log_prob * (1 - prob) ** self.gamma
+        return loss.sum(dim=-1).mean()
 
 class MSELoss(pl.LightningModule):
     def __init__(
@@ -34,9 +47,10 @@ class MSELoss(pl.LightningModule):
                 if cell_prop["discrete"]:
                     # discrete variable, set up cross entropy module
                     weight = torch.from_numpy(
-                        np.float32(np.clip(1 / cell_prop["freq"], 0.0, 20.0))
+                        np.float32(np.clip(1 / cell_prop["freq"], 0.1, 10.0))
                     ) if task_cfg["balance_classes"] else None
                     self.cell_prop_cross_ent[k] = nn.CrossEntropyLoss(weight=weight)
+                    #self.cell_prop_cross_ent[k] = FocalLoss(gamma = 2.0)
                     self.cell_prop_accuracy[k] = Accuracy(
                         task="multiclass", num_classes=len(cell_prop["values"]), average="macro",
                     )
@@ -56,17 +70,6 @@ class MSELoss(pl.LightningModule):
         self._create_results_dict()
 
         print(f"automatic_optimization: {self.automatic_optimization}")
-
-    """
-    @property
-    def automatic_optimization(self) -> bool:
-        #return self._automatic_optimization
-        return False
-
-    @automatic_optimization.setter
-    def set_automatic_optimization(self, value: bool):
-        self._automatic_optimization = value
-    """
 
 
     def _create_results_dict(self):
@@ -106,10 +109,7 @@ class MSELoss(pl.LightningModule):
                             cell_prop_pred[k][idx], cell_prop_targets[idx, n, 0]
                         )
 
-        # TODO: fit this
-        alpha = 1.0
-        beta = 1.0
-        loss = alpha * gene_loss + beta * cell_prop_loss
+        loss = self.task_cfg["gene_weight"] * gene_loss + self.task_cfg["cell_prop_weight"] * cell_prop_loss
 
         self.log("gene_loss", gene_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
         self.log("cell_loss", cell_prop_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
@@ -148,8 +148,8 @@ class MSELoss(pl.LightningModule):
                     self.cell_prop_explained_var[k].update(
                         cell_prop_pred[k][idx], cell_prop_targets[idx, n, 0]
                     )
-                    self.results[k].append(cell_prop_targets[:, n].detach().cpu().numpy())
-                    self.results["pred_" + k].append(cell_prop_pred[k][idx].detach().cpu().to(torch.float32).numpy())
+                    self.results[k].append(cell_prop_targets[:, n, 0].detach().cpu().numpy())
+                    self.results["pred_" + k].append(cell_prop_pred[k].detach().cpu().to(torch.float32).numpy())
 
         self.log("gene_ex", self.gene_explained_var, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
 
