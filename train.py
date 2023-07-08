@@ -23,21 +23,24 @@ def check_train_test_set(cfg):
     train_test_inter = train_ids.intersection(test_ids)
     print(f"Number of train users in test set: {len(train_test_inter)}")
 
+
 def main(adverserial: bool = False):
 
     # Set seed
-    pl.seed_everything(2299)
+    pl.seed_everything(42)
 
     check_train_test_set(dataset_cfg)
 
     # Set up data module
     dm = DataModule(**dataset_cfg)
-
     dm.setup(None)
 
     # Transfer information from Dataset
     model_cfg["seq_len"] = dm.train_dataset.n_genes
     model_cfg["cell_properties"] = dm.train_dataset.cell_properties
+    model_cfg["bin_gene_count"] = dm.train_dataset.bin_gene_count
+    model_cfg["rank_order"] = dm.train_dataset.rank_order
+    model_cfg["n_gene_bins"] = dm.train_dataset.n_gene_bins
     task_cfg["cell_properties"] = dm.train_dataset.cell_properties
 
     # Create network
@@ -57,8 +60,8 @@ def main(adverserial: bool = False):
         accumulate_grad_batches=trainer_cfg["accumulate_grad_batches"],
         precision=trainer_cfg["precision"],
         strategy=DDPStrategy(find_unused_parameters=True) if trainer_cfg["n_devices"] > 1 else "auto",
-        limit_train_batches=4000,
-        limit_val_batches=500,
+        limit_train_batches=2000,
+        limit_val_batches=200,
     )
 
     trainer.fit(task, dm)

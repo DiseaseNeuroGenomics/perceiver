@@ -14,7 +14,7 @@ from torch.utils.data import (
     SequentialSampler,
     Subset,
 )
-
+from genes import significant_genes
 class SingleCellDataset(Dataset):
     def __init__(
         self,
@@ -26,13 +26,15 @@ class SingleCellDataset(Dataset):
         normalize_total: Optional[float] = 10_000,
         log_normalize: bool = True,
         rank_order: bool = False,
-        scale_by_max: bool = False,
         pin_memory: bool = False,
         cell_prop_same_ids: bool = False,
         max_cell_prop_val: float = 999,
         cutmix_pct: float = 0.0,
         mixup: bool = False,
         max_gene_val: float = 10.0,
+        protein_coding_only: bool = False,
+        bin_gene_count: bool = True,
+        n_gene_bins: int = 16,
     ):
 
         self.metadata = pickle.load(open(metadata_path, "rb"))
@@ -41,38 +43,64 @@ class SingleCellDataset(Dataset):
         self.n_samples = len(self.metadata["obs"]["class"])
         print(f"Number of cells {self.n_samples}")
         if "gene_name" in self.metadata["var"].keys():
-            self.n_genes = len(self.metadata["var"]["gene_name"])
+            self.n_genes_original = len(self.metadata["var"]["gene_name"])
         else:
-            self.n_genes = len(self.metadata["var"])
+            self.n_genes_original = len(self.metadata["var"])
         self.n_cell_properties = len(cell_properties) if cell_properties is not None else 0
         self.n_mask = n_mask
         self.batch_size = batch_size
-        if rank_order:
-            print("Since rank_oder=True, setting normalize_total to None and log_normalize to False")
+
+        if bin_gene_count:
+            print("Since bin_gene_count is True, setting all other normalization to False")
             normalize_total = None
             log_normalize = False
-        if normalize_total or log_normalize:
-            print("Since log_normalize or normalize_total=True, setting rank_order and scale_by_max to False")
-            scale_by_max = False
             rank_order = False
+        if rank_order:
+            print("Since rank_oder is True, setting all other normalization to False")
+            normalize_total = None
+            log_normalize = False
+            bin_gene_count = False
+        if normalize_total or log_normalize:
+            print("Since log_normalize or normalize_total is True, setting all other normalization to False")
+            rank_order = False
+            bin_gene_count = False
 
         self.normalize_total = normalize_total
         self.log_normalize = log_normalize
         self.rank_order = rank_order
-        self.scale_by_max = scale_by_max
+        self.bin_gene_count = bin_gene_count
+        self.n_gene_bins = n_gene_bins
         self.pin_memory = pin_memory
         self.cell_prop_same_ids = cell_prop_same_ids
         self.max_cell_prop_val = max_cell_prop_val
         self.cutmix_pct = cutmix_pct
         self.mixup = mixup
         self.max_gene_val = max_gene_val
+        self.protein_coding_only = protein_coding_only
 
-        self.offset = 2 * self.n_genes  # FP16 is 2 bytes
+        self.offset = 2 * self.n_genes_original  # FP16 is 2 bytes
+
+        # possibly use for embedding the gene inputs
+        self.cell_classes = np.array(['Astro', 'EN', 'Endo', 'IN', 'Immune', 'Mural', 'OPC', 'Oligo'])
+
+        # this will down-sample the number if genes if specified
+        # for now, need to call this AFTER calculating offset
+        self._get_gene_index()
+
         self._get_cell_prop_info()
         self._create_gene_cell_prop_ids()
 
     def __len__(self):
         return self.n_samples
+
+    def _get_gene_index(self):
+
+        if self.protein_coding_only:
+            self.gene_idx = np.where(self.metadata["var"]['protein_coding'])[0]
+        else:
+            self.gene_idx = np.arange(self.n_genes_original)
+        self.n_genes = len(self.gene_idx)
+        print(f"Sub-sampling genes. Number of genes is now {self.n_genes}")
 
     def _create_gene_cell_prop_ids(self):
         """"Create the gene and class ids. Will start with the gene ids, and then concatenate
@@ -118,11 +146,13 @@ class SingleCellDataset(Dataset):
                     ]
                     self.cell_properties[k]["values"] = unique_list[idx]
                     self.cell_properties[k]["freq"] = counts[idx] / np.mean(counts[idx])
+                    print("CELL PROP INFO",k, self.cell_properties[k]["freq"])
 
                 elif cell_prop["discrete"] and cell_prop["values"] is not None:
                     unique_list, counts = np.unique(self.metadata["obs"][k], return_counts=True)
                     idx = [n for n, u in enumerate(unique_list) if u in cell_prop["values"]]
                     self.cell_properties[k]["freq"] = counts[idx] / np.mean(counts[idx])
+                    print("CELL PROP INFO", k, self.cell_properties[k]["freq"])
 
         else:
             self.cell_prop_dist = None
@@ -154,25 +184,41 @@ class SingleCellDataset(Dataset):
                     else:
                         cell_prop_vals[n0, n1, idx[0]] = 1.0
 
-        return torch.from_numpy(cell_prop_vals)
+
+        cell_class_id = np.zeros((self.batch_size,), dtype=np.int64)
+        for n, i in enumerate(batch_idx):
+            idx = np.where(self.metadata["obs"]["class"][i] == self.cell_classes)[0]
+            cell_class_id[n] = idx[0]
+
+        return torch.from_numpy(cell_prop_vals), torch.from_numpy(cell_class_id)
 
     def _get_gene_vals(self, batch_idx: List[int]):
 
         gene_vals = np.zeros((self.batch_size, self.n_genes), dtype=np.float32)
+        input_gene_vals = np.zeros_like(gene_vals)
+
         for n, i in enumerate(batch_idx):
             gene_vals[n, :] = np.memmap(
-                self.data_path, dtype='float16', mode='r', shape=(self.n_genes,), offset=i * self.offset
-            ).astype(np.float32)
-            if self.rank_order:
-                gene_vals[n, :] = self._rank_order(gene_vals[n, :])
-                if self.scale_by_max:
-                    gene_vals[n, :] /= (1e-9 + self.metadata["stats"]["max"])
-            elif self.normalize_total or self.log_normalize:
+                self.data_path, dtype='float16', mode='r', shape=(self.n_genes_original,), offset=i * self.offset
+            )[self.gene_idx].astype(np.float32)
+            if self.bin_gene_count:
+                input_gene_vals[n, :] = self._bin_gene_count(gene_vals[n, :])
                 gene_vals[n, :] = self._normalize(gene_vals[n, :])
+            elif self.rank_order:
+                input_gene_vals[n, :] = self._rank_order(gene_vals[n, :])
+                gene_vals[n, :] = self._normalize(gene_vals[n, :])
+            elif self.normalize_total or self.log_normalize:
+                input_gene_vals[n, :] = self._normalize(gene_vals[n, :])
+                gene_vals[n, :] = input_gene_vals[n, :]
 
-        gene_vals = torch.from_numpy(gene_vals)
+
         # return two copies since we'll modify gene_vals but keep gene_targets as is
-        return gene_vals, gene_vals
+        return torch.from_numpy(input_gene_vals), torch.from_numpy(gene_vals)
+
+    def _bin_gene_count(self, x: np.ndarray) -> np.ndarray:
+
+        return np.minimum(x, self.n_gene_bins - 1)
+
 
     def _rank_order(self, x: np.ndarray) -> np.ndarray:
         """Expression values of 0 are mapped to 0. Expression values > 0 will be mapped to the percentage of
@@ -200,7 +246,7 @@ class SingleCellDataset(Dataset):
     def _prepare_data(self, batch_idx):
 
         gene_vals, gene_targets = self._get_gene_vals(batch_idx)
-        cell_prop_vals = self._get_cell_prop_vals(batch_idx)
+        cell_prop_vals, cell_class_id = self._get_cell_prop_vals(batch_idx)
 
         # If specified, perform data augmentation mixup or cutmix
         if self.mixup:
@@ -212,7 +258,7 @@ class SingleCellDataset(Dataset):
         key_padding_mask = torch.zeros_like(gene_vals).detach()
         key_padding_mask[zero_idx[0], zero_idx[1]] = 1.0
 
-        return gene_vals, key_padding_mask, gene_targets, cell_prop_vals
+        return gene_vals, key_padding_mask, gene_targets, cell_prop_vals, cell_class_id
 
     def _mixup(self, gene_vals, gene_targets, cell_prop_vals):
 
@@ -230,9 +276,8 @@ class SingleCellDataset(Dataset):
                 # randomly choose partner
                 j = np.random.choice(list(good_set.difference(set([n]))))
                 # set mix percentage
-                alpha = np.random.rand() ** 2
+                alpha = np.clip(np.random.exponential(0.05), 0.0, 0.25)
                 new_gene_vals[n, :] = (1 - alpha) * gene_vals[n, :] + alpha * gene_vals[j, :]
-                print(alpha)
 
                 # take the weighted average of the targets
                 new_cell_prop_vals[n, :] = (1 - alpha) * cell_prop_vals[n, :] + alpha * cell_prop_vals[j, :]
@@ -299,7 +344,7 @@ class SingleCellDataset(Dataset):
         if len(idx) != self.batch_size:
             raise ValueError("Index length not equal to batch_size")
 
-        gene_vals, key_padding_mask, gene_targets, cell_prop_vals = self._prepare_data(idx)
+        gene_vals, key_padding_mask, gene_targets, cell_prop_vals, cell_class_id = self._prepare_data(idx)
 
         # mask indices
         mask_col_ids = []
@@ -334,7 +379,16 @@ class SingleCellDataset(Dataset):
             gene_ids[i, zero_idx] = self.n_genes
             gene_vals[i, zero_idx] = 0.0 #  should already be zero...just to be safe
 
-        batch = gene_ids, gene_target_ids, cell_prop_ids, gene_vals, gene_targets, key_padding_mask, cell_prop_vals
+        batch = (
+            gene_ids,
+            gene_target_ids,
+            cell_prop_ids,
+            gene_vals,
+            gene_targets,
+            key_padding_mask,
+            cell_prop_vals,
+            cell_class_id,
+        )
 
         if self.pin_memory:
             for tensor in batch:
@@ -465,7 +519,7 @@ class DataModule(pl.LightningDataModule):
         cell_prop_same_ids: bool = False,
         cutmix_pct: float = 0.0,
         mixup: bool = False,
-        subset_data_info: Optional[Tuple[str, List[str]]] = None,
+        bin_gene_count: bool = False,
     ):
         super().__init__()
         self.train_data_path = train_data_path
@@ -480,9 +534,7 @@ class DataModule(pl.LightningDataModule):
         self.cell_prop_same_ids = cell_prop_same_ids
         self.cutmix_pct = cutmix_pct
         self.mixup = mixup
-        # subset_data_info is a Tuple of two elements, first element indicate obs, second element desired values
-        # e.g. ("class", ["EN", "Oligo"]) will select only cells whose class = "Oligo" or "EM"
-        self.subset_data_info = subset_data_info
+        self.bin_gene_count = bin_gene_count
 
     def setup(self, stage):
 
@@ -497,7 +549,7 @@ class DataModule(pl.LightningDataModule):
             cell_prop_same_ids=self.cell_prop_same_ids,
             cutmix_pct=self.cutmix_pct,
             mixup=self.mixup,
-
+            bin_gene_count=self.bin_gene_count,
         )
         self.val_dataset = SingleCellDataset(
             self.test_data_path,
@@ -510,6 +562,7 @@ class DataModule(pl.LightningDataModule):
             cell_prop_same_ids=self.cell_prop_same_ids,
             cutmix_pct=0.0,
             mixup=False,
+            bin_gene_count=self.bin_gene_count,
         )
 
         self.n_genes = self.train_dataset.n_genes

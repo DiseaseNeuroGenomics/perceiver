@@ -98,6 +98,10 @@ class Exceiver(nn.Module):
         cell_properties: Optional[Dict[str, Any]] = None,
         dropout: float = 0.0,  # for the process attention module
         rank_order: bool = False,
+        bin_gene_count: bool = True,
+        use_class_emb: bool = True,
+        n_gene_bins: int = 16,
+        n_classes: int = 8,
         **kwargs,
     ):
 
@@ -105,8 +109,12 @@ class Exceiver(nn.Module):
 
         self.seq_len = seq_len
         self.seq_dim = seq_dim
-        # rank ordering will change how genes are embedded
+        # rank ordering/binning gene count will change how genes are embedded
         self.rank_order = rank_order
+        self.bin_gene_count = bin_gene_count
+        self.use_class_emb = use_class_emb
+        self.n_classes = n_classes
+        self.n_gene_bins = n_gene_bins
         # create the gene embeddings based on whether to use rank ordering
         self._create_gene_embeddings()
 
@@ -131,7 +139,8 @@ class Exceiver(nn.Module):
 
         self.cell_properties = cell_properties
         if self.n_cell_props > 0:
-            self.cell_prop_emb = nn.Embedding(self.n_cell_props + 1, seq_dim, padding_idx=self.n_cell_props)
+            #self.cell_prop_emb = nn.Embedding(self.n_cell_props + 1, seq_dim, padding_idx=self.n_cell_props)
+            self.cell_prop_emb = nn.Embedding(9, seq_dim, padding_idx=8)
             self.cell_prop_mlp = nn.ModuleDict()
             for k, cell_prop in cell_properties.items():
                 # the output size of the cell property prediction MLP will be 1 if the property is continuous;
@@ -153,8 +162,13 @@ class Exceiver(nn.Module):
 
     def _create_gene_embeddings(self):
 
-        print(f"rank_order = {self.rank_order}")
-        if self.rank_order:
+        self.class_emb = nn.Embedding(self.n_classes + 1, self.seq_dim, padding_idx=self.n_classes)
+
+        if self.bin_gene_count:
+            self.gene_emb = nn.Embedding(self.seq_len + 1, self.seq_dim, padding_idx=self.seq_len)
+            self.gene_bin_emb = nn.Embedding(self.n_gene_bins + 1, self.seq_dim, padding_idx=self.n_gene_bins)
+
+        elif self.rank_order:
             self.gene_emb_low = nn.Embedding(self.seq_len + 1, self.seq_dim, padding_idx=self.seq_len)
             self.gene_emb_high = nn.Embedding(self.seq_len + 1, self.seq_dim, padding_idx=self.seq_len)
             # TODO: I think this initialization below works...need to confirm
@@ -164,20 +178,33 @@ class Exceiver(nn.Module):
             self.gene_val_w = nn.Parameter(torch.ones(1, self.seq_len))
             self.gene_val_b = nn.Parameter(torch.zeros(1, self.seq_len))
 
-    def _gene_embedding(self, gene_ids: torch.Tensor, gene_vals: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def _target_embedding(self, gene_ids: torch.Tensor) -> torch.Tensor:
 
-        if self.rank_order:
-            if gene_vals is not None:
-                return (1 - gene_vals[..., None]) * self.gene_emb_low(gene_ids) + gene_vals[..., None] * self.gene_emb_high(gene_ids)
+        return self.gene_emb(gene_ids)
+
+    def _gene_embedding(
+        self,
+        gene_ids: torch.Tensor,
+        gene_vals: torch.Tensor,
+        cell_class_id: torch.Tensor,
+    ) -> torch.Tensor:
+
+        if self.bin_gene_count:
+            if self.use_class_emb:
+                return (self.gene_emb(gene_ids) +
+                        self.gene_bin_emb(gene_vals.to(torch.long)) +
+                        self.class_emb(cell_class_id.to(torch.long))[:, None, :]
+                        ) / 3
             else:
-                return self.gene_emb_high(gene_ids)
+                return (self.gene_emb(gene_ids) + self.gene_bin_emb(gene_vals.to(torch.long))) / 2
+        elif self.rank_order:
+            return (1 - gene_vals[..., None]) * self.gene_emb_low(gene_ids) + gene_vals[..., None] * self.gene_emb_high(gene_ids)
+
         else:
-            if gene_vals is not None:
-                alpha = gene_vals * self.gene_val_w + self.gene_val_b
-                gene_emb = self.gene_emb(gene_ids)
-                return alpha.unsqueeze(2) * gene_emb
-            else:
-                return self.gene_emb(gene_ids)
+            alpha = gene_vals * self.gene_val_w + self.gene_val_b
+            gene_emb = self.gene_emb(gene_ids)
+            return alpha.unsqueeze(2) * gene_emb
+
 
 
     def forward(
@@ -186,6 +213,7 @@ class Exceiver(nn.Module):
         gene_target_ids: torch.Tensor,
         cell_prop_target_ids: torch.Tensor,
         gene_vals: torch.Tensor,
+        cell_class_id: torch.Tensor,
         key_padding_mask: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
 
@@ -193,8 +221,8 @@ class Exceiver(nn.Module):
 
         cell_prop_target_query = self.cell_prop_emb(cell_prop_target_ids)
 
-        key_vals = self._gene_embedding(gene_ids, gene_vals)
-        gene_target_query = self._gene_embedding(gene_target_ids)
+        key_vals = self._gene_embedding(gene_ids, gene_vals, cell_class_id)
+        gene_target_query = self._target_embedding(gene_target_ids)
 
         # Main calculation of latent variables
         latent, encoder_weights = self.encoder_attn_step(

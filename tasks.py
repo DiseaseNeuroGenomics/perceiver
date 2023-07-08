@@ -81,9 +81,10 @@ class MSELoss(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
 
-        gene_ids, gene_target_ids, cell_prop_ids, gene_vals, gene_targets, key_padding_mask, cell_prop_targets = batch
+
+        gene_ids, gene_target_ids, cell_prop_ids, gene_vals, gene_targets, key_padding_mask, cell_prop_targets, cell_class_id = batch
         gene_pred, cell_prop_pred, latent = self.network.forward(
-            gene_ids, gene_target_ids, cell_prop_ids, gene_vals, key_padding_mask,
+            gene_ids, gene_target_ids, cell_prop_ids, gene_vals, cell_class_id, key_padding_mask,
         )
         p_dims = [len(p["values"]) for p in self.cell_properties.values()]
 
@@ -118,10 +119,10 @@ class MSELoss(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx):
 
-        gene_ids, gene_target_ids, cell_prop_ids, gene_vals, gene_targets, key_padding_mask, cell_prop_targets = batch
+        gene_ids, gene_target_ids, cell_prop_ids, gene_vals, gene_targets, key_padding_mask, cell_prop_targets, cell_class_id = batch
 
         gene_pred, cell_prop_pred, latent = self.network.forward(
-            gene_ids, gene_target_ids, cell_prop_ids, gene_vals, key_padding_mask,
+            gene_ids, gene_target_ids, cell_prop_ids, gene_vals, cell_class_id, key_padding_mask,
         )
 
         p_dims = [len(p["values"]) for p in self.cell_properties.values()]
