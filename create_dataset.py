@@ -47,7 +47,7 @@ class CreateData:
         ]
         self.var_keys = [
             'gene_id', 'gene_name', 'gene_type',  'robust', 'highly_variable_features', 'ribosomal',
-            'mitochondrial', 'protein_coding', 'mitocarta_genes', 'robust_protein_coding',
+            'mitochondrial', 'protein_coding', 'mitocarta_genes', 'robust_protein_coding', 'percent_cells',
         ]
 
         if len(source_paths) == 1:
