@@ -14,7 +14,8 @@ from torch.utils.data import (
     SequentialSampler,
     Subset,
 )
-from genes import significant_genes
+
+
 class SingleCellDataset(Dataset):
     def __init__(
         self,
@@ -32,7 +33,7 @@ class SingleCellDataset(Dataset):
         cutmix_pct: float = 0.0,
         mixup: bool = False,
         max_gene_val: float = 10.0,
-        protein_coding_only: bool = False,
+        protein_coding_only: bool = True,
         bin_gene_count: bool = True,
         n_gene_bins: int = 16,
     ):
@@ -51,9 +52,7 @@ class SingleCellDataset(Dataset):
         self.batch_size = batch_size
 
         if bin_gene_count:
-            print("Since bin_gene_count is True, setting all other normalization to False")
-            normalize_total = None
-            log_normalize = False
+            print("Since bin_gene_count is True, setting rank_oder to False")
             rank_order = False
         if rank_order:
             print("Since rank_oder is True, setting all other normalization to False")
@@ -63,7 +62,6 @@ class SingleCellDataset(Dataset):
         if normalize_total or log_normalize:
             print("Since log_normalize or normalize_total is True, setting all other normalization to False")
             rank_order = False
-            bin_gene_count = False
 
         self.normalize_total = normalize_total
         self.log_normalize = log_normalize
@@ -89,6 +87,9 @@ class SingleCellDataset(Dataset):
 
         self._get_cell_prop_info()
         self._create_gene_cell_prop_ids()
+
+
+        self.bins = [0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 11, 13, 16, 22, 35, 60, 9999]
 
     def __len__(self):
         return self.n_samples
@@ -197,6 +198,11 @@ class SingleCellDataset(Dataset):
         gene_vals = np.zeros((self.batch_size, self.n_genes), dtype=np.float32)
         input_gene_vals = np.zeros_like(gene_vals)
 
+        x = np.memmap(
+            self.data_path, dtype='float16', mode='r', shape=(1000, self.n_genes_original,), offset=0 * self.offset
+        )[:, self.gene_idx].astype(np.float32)
+
+
         for n, i in enumerate(batch_idx):
             gene_vals[n, :] = np.memmap(
                 self.data_path, dtype='float16', mode='r', shape=(self.n_genes_original,), offset=i * self.offset
@@ -216,8 +222,7 @@ class SingleCellDataset(Dataset):
         return torch.from_numpy(input_gene_vals), torch.from_numpy(gene_vals)
 
     def _bin_gene_count(self, x: np.ndarray) -> np.ndarray:
-
-        return np.minimum(x, self.n_gene_bins - 1)
+        return np.digitize(x, self.bins)
 
 
     def _rank_order(self, x: np.ndarray) -> np.ndarray:
@@ -239,7 +244,7 @@ class SingleCellDataset(Dataset):
 
         x = x * self.normalize_total / np.sum(x) if self.normalize_total is not None else x
         x = np.log1p(x) if self.log_normalize else x
-        x = np.clip(x, 0.0, self.max_gene_val)
+        x = np.minimum(x, self.max_gene_val)
 
         return x
 
@@ -378,6 +383,23 @@ class SingleCellDataset(Dataset):
             zero_idx = torch.where(key_padding_mask[i, :] == 1)[0]
             gene_ids[i, zero_idx] = self.n_genes
             gene_vals[i, zero_idx] = 0.0 #  should already be zero...just to be safe
+
+
+        n_input_genes = np.random.choice([600, 700, 800, 900])
+        keep_col_ids = []
+        keep_row_ids = []
+        for i in range(self.batch_size):
+            nonzero_idx = torch.where(gene_vals[i, :] > 0)[0]
+            # randomly choose number to mask for each cell
+            # n = np.random.randint(0, self.n_mask)
+            idx = np.random.choice(nonzero_idx, n_input_genes, replace=False)
+            for j in idx:
+                keep_row_ids.append(i)
+                keep_col_ids.append(j)
+
+        gene_ids = gene_ids[keep_row_ids, keep_col_ids].reshape(self.batch_size, -1)
+        gene_vals = gene_vals[keep_row_ids, keep_col_ids].reshape(self.batch_size, -1)
+        key_padding_mask = key_padding_mask[keep_row_ids, keep_col_ids].reshape(self.batch_size, -1)
 
         batch = (
             gene_ids,
@@ -535,6 +557,7 @@ class DataModule(pl.LightningDataModule):
         self.cutmix_pct = cutmix_pct
         self.mixup = mixup
         self.bin_gene_count = bin_gene_count
+
 
     def setup(self, stage):
 
