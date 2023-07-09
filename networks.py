@@ -68,7 +68,7 @@ class ProcessSelfAttn(nn.Module):
             dropout=dropout,
             activation="gelu",
             batch_first=True,
-            norm_first=True,  # NYM June 24
+            norm_first=False,  # NYM June 24
         )
         self.transformer = nn.TransformerEncoder(self.encoder_layer, n_layers)
 
@@ -137,10 +137,11 @@ class Exceiver(nn.Module):
             nn.LayerNorm(seq_dim), nn.Linear(seq_dim, 1)
         )
 
+        print("BIN GENES, and class emb", self.bin_gene_count, self.use_class_emb)
+
         self.cell_properties = cell_properties
         if self.n_cell_props > 0:
-            #self.cell_prop_emb = nn.Embedding(self.n_cell_props + 1, seq_dim, padding_idx=self.n_cell_props)
-            self.cell_prop_emb = nn.Embedding(9, seq_dim, padding_idx=8)
+            self.cell_prop_emb = nn.Embedding(self.n_cell_props + 1, seq_dim, padding_idx=self.n_cell_props)
             self.cell_prop_mlp = nn.ModuleDict()
             for k, cell_prop in cell_properties.items():
                 # the output size of the cell property prediction MLP will be 1 if the property is continuous;
@@ -189,6 +190,7 @@ class Exceiver(nn.Module):
         cell_class_id: torch.Tensor,
     ) -> torch.Tensor:
 
+
         if self.bin_gene_count:
             if self.use_class_emb:
                 return (self.gene_emb(gene_ids) +
@@ -201,9 +203,9 @@ class Exceiver(nn.Module):
             return (1 - gene_vals[..., None]) * self.gene_emb_low(gene_ids) + gene_vals[..., None] * self.gene_emb_high(gene_ids)
 
         else:
-            alpha = gene_vals * self.gene_val_w + self.gene_val_b
+            class_emb = self.class_emb(cell_class_id.to(torch.long)).unsqueeze(1) if self.use_class_emb else 0.0
             gene_emb = self.gene_emb(gene_ids)
-            return alpha.unsqueeze(2) * gene_emb
+            return gene_vals.unsqueeze(2) * gene_emb + class_emb
 
 
 
@@ -262,6 +264,7 @@ def load_model(model_save_path, model):
     ckpt = torch.load(model_save_path)
     key = "state_dict" if "state_dict" in ckpt else "model_state_dict"
     for k, v in ckpt[key].items():
+
         if "cell_property" in k:
             non_network_params.append(k)
         elif "network" in k:
