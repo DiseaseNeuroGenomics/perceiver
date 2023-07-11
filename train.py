@@ -3,10 +3,10 @@ import torch
 import pickle
 import pytorch_lightning as pl
 from pytorch_lightning.strategies.ddp import DDPStrategy
-from datasets import DataModule
+from datasets_memory import DataModule
 from networks import Exceiver
 from tasks import MSELoss, AdverserialLoss
-from config import dataset_cfg, task_cfg, model_cfg, trainer_cfg
+from config import dataset_cfg, task_cfg, model_cfg, trainer_cfg, dataset_memory_cfg
 import warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -29,19 +29,16 @@ def main(adverserial: bool = False):
     # Set seed
     pl.seed_everything(42)
 
-    check_train_test_set(dataset_cfg)
+    # check_train_test_set(dataset_cfg)
 
     # Set up data module
-    dm = DataModule(**dataset_cfg)
-    dm.setup(None)
+    dm = DataModule(**dataset_memory_cfg)
 
     # Transfer information from Dataset
-    model_cfg["seq_len"] = dm.train_dataset.n_genes
-    model_cfg["cell_properties"] = dm.train_dataset.cell_properties
-    model_cfg["bin_gene_count"] = dm.train_dataset.bin_gene_count
-    model_cfg["rank_order"] = dm.train_dataset.rank_order
-    model_cfg["n_gene_bins"] = dm.train_dataset.n_gene_bins
-    task_cfg["cell_properties"] = dm.train_dataset.cell_properties
+    model_cfg["seq_len"] = dm.n_genes
+    model_cfg["cell_properties"] = dm.cell_properties
+    model_cfg["bin_gene_count"] = dm.bin_gene_count
+    task_cfg["cell_properties"] = dm.cell_properties
 
     # Create network
     model = Exceiver(**model_cfg)
