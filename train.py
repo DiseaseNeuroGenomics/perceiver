@@ -32,7 +32,7 @@ def main(adverserial: bool = False):
     # check_train_test_set(dataset_cfg)
 
     # Set up data module
-    dm = DataModule(**dataset_memory_cfg)
+    dm = DataModule(**dataset_cfg)
 
     # Transfer information from Dataset
     model_cfg["seq_len"] = dm.n_genes
