@@ -27,21 +27,26 @@ class SingleCellDataset(Dataset):
         normalize_total: Optional[float] = 10_000,
         log_normalize: bool = True,
         rank_order: bool = False,
-        pin_memory: bool = False,
         cell_prop_same_ids: bool = False,
         max_cell_prop_val: float = 999,
         cutmix_pct: float = 0.0,
         mixup: bool = False,
         max_gene_val: float = 10.0,
-        protein_coding_only: bool = True,
+        protein_coding_only: bool = False,
         bin_gene_count: bool = True,
         n_gene_bins: int = 16,
+        preload_into_memory: bool = False,
+        restrict_cell_class: Optional[List[str]] = None,
     ):
 
         self.metadata = pickle.load(open(metadata_path, "rb"))
         self.data_path = data_path
         self.cell_properties = cell_properties
         self.n_samples = len(self.metadata["obs"]["class"])
+
+
+        self._restrict_cell_class(restrict_cell_class)
+
         print(f"Number of cells {self.n_samples}")
         if "gene_name" in self.metadata["var"].keys():
             self.n_genes_original = len(self.metadata["var"]["gene_name"])
@@ -68,15 +73,15 @@ class SingleCellDataset(Dataset):
         self.rank_order = rank_order
         self.bin_gene_count = bin_gene_count
         self.n_gene_bins = n_gene_bins
-        self.pin_memory = pin_memory
         self.cell_prop_same_ids = cell_prop_same_ids
         self.max_cell_prop_val = max_cell_prop_val
         self.cutmix_pct = cutmix_pct
         self.mixup = mixup
         self.max_gene_val = max_gene_val
         self.protein_coding_only = protein_coding_only
+        self.preload_into_memory = preload_into_memory
 
-        self.offset = 2 * self.n_genes_original  # FP16 is 2 bytes
+        self.offset = 1 * self.n_genes_original  # UINT8 is 1 bytes
 
         # possibly use for embedding the gene inputs
         self.cell_classes = np.array(['Astro', 'EN', 'Endo', 'IN', 'Immune', 'Mural', 'OPC', 'Oligo'])
@@ -88,11 +93,38 @@ class SingleCellDataset(Dataset):
         self._get_cell_prop_info()
         self._create_gene_cell_prop_ids()
 
+        if self.preload_into_memory:
+            self._preload_into_memory()
 
-        self.bins = [0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 11, 13, 16, 22, 35, 60, 9999]
+
+        self.bins = [0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 11, 13, 16, 22, 35, 55, 9999]
 
     def __len__(self):
         return self.n_samples
+
+    def _restrict_cell_class(self, restrict_cell_class):
+
+    if restrict_cell_class is None:
+        self.cell_idx = None
+    else:
+        self.cell_idx = [n for n, c in enumerate(self.metadata["obs"]["class"]) if c in restrict_cell_class]
+        self.n_samples = len(self.cell_idx)
+
+        for k in self.metadata["obs"].keys():
+            self.metadata["obs"][k] = self.metadata["obs"][k][self.cell_idx]
+
+    def _load_into_memory(self):
+
+        self.gene_counts = np.memmap(
+            self.data_path,
+            dtype='uint8',
+            mode='r',
+            shape=(self.n_samples, self.n_genes_original),
+            offset=0,
+        )[:, self.gene_idx]
+
+        if self.self.cell_idx is not None:
+            self.gene_counts = self.gene_counts[self.self.cell_idx]
 
     def _get_gene_index(self):
 
@@ -118,108 +150,65 @@ class SingleCellDataset(Dataset):
 
         return gene_ids, cell_prop_ids
 
-    def _get_cell_prop_info(self):
-        """Extract the list of uniques values for each cell property (e.g. sex, cell type, etc.) to be predicted"""
-        if self.n_cell_properties > 0:
-
-            for k, cell_prop in self.cell_properties.items():
-                # skip if required field are already present as this function can be called multiple
-                # times if using multiple GPUs
-                if "freq" in self.cell_properties[k] or "mean" in self.cell_properties[k]:
-                    continue
-                if not cell_prop["discrete"]:
-                    # for cell properties with continuous value, determine the mean/std for normalization
-                    cell_vals = self.metadata["obs"][k]
-                    # remove nans, negative values, or anything else suspicious
-                    idx = [n for n, cv in enumerate(cell_vals) if cv >= 0 and cv < self.max_cell_prop_val]
-                    self.cell_properties[k]["mean"] = np.mean(cell_vals[idx])
-                    self.cell_properties[k]["std"] = np.std(cell_vals[idx])
-
-                elif cell_prop["discrete"] and cell_prop["values"] is None:
-                    # for cell properties with discrete value, determine the possible values if none were supplied
-                    # and find their distribution
-                    unique_list, counts = np.unique(self.metadata["obs"][k], return_counts=True)
-                    # remove nans, negative values, or anything else suspicious
-                    idx = [
-                        n for n, u in enumerate(unique_list) if (
-                            isinstance(u, str) or (u >= 0 and u < self.max_cell_prop_val)
-                        )
-                    ]
-                    self.cell_properties[k]["values"] = unique_list[idx]
-                    self.cell_properties[k]["freq"] = counts[idx] / np.mean(counts[idx])
-                    print("CELL PROP INFO",k, self.cell_properties[k]["freq"])
-
-                elif cell_prop["discrete"] and cell_prop["values"] is not None:
-                    unique_list, counts = np.unique(self.metadata["obs"][k], return_counts=True)
-                    idx = [n for n, u in enumerate(unique_list) if u in cell_prop["values"]]
-                    self.cell_properties[k]["freq"] = counts[idx] / np.mean(counts[idx])
-                    print("CELL PROP INFO", k, self.cell_properties[k]["freq"])
-
-        else:
-            self.cell_prop_dist = None
-
-    def _get_cell_prop_vals(self, batch_idx: List[int]):
+    def _get_cell_prop_vals(self):
         """Extract the cell property value for ach entry in the batch"""
         if self.n_cell_properties == 0:
             return None
 
-        p_dims = [len(p["values"]) for p in self.cell_properties.values()]
+        self.labels = np.zeros((self.n_samples, self.n_cell_properties), dtype=np.float32)
+        self.cell_class = np.zeros((self.n_samples), dtype=np.uint8)
 
-        cell_prop_vals = np.zeros((self.batch_size, self.n_cell_properties, np.max(p_dims)), dtype=np.float32)
-        for n0, i in enumerate(batch_idx):
+        for n0 in range(self.n_samples):
             for n1, (k, cell_prop) in enumerate(self.cell_properties.items()):
+                cell_val = self.metadata["obs"][k][n0]
                 if not cell_prop["discrete"]:
                     # continuous value
-                    cell_val = self.metadata["obs"][k][i]
                     if np.abs(cell_val) > self.max_cell_prop_val:
-                        cell_prop_vals[n0, n1, 0] = -9999
+                        self.labels[n0, n1] = -9999
                     else:
                         # normalize
-                        cell_prop_vals[n0, n1, 0] = (cell_val - cell_prop["mean"]) / cell_prop["std"]
+                        self.labels[n0, n1] = (cell_val - cell_prop["mean"]) / cell_prop["std"]
                 else:
                     # discrete value
-                    idx = np.where(self.metadata["obs"][k][i] == np.array(cell_prop["values"]))[0]
+                    idx = np.where(cell_val == np.array(cell_prop["values"]))[0]
                     # cell property values of -1 will imply N/A, and will be masked out
                     if len(idx) == 0:
-                        cell_prop_vals[n0, n1, 0] = -9999
+                        self.labels[n0, n1] = -9999
                     else:
-                        cell_prop_vals[n0, n1, idx[0]] = 1.0
+                        self.labels[n0, n1] = idx[0]
+
+            idx = np.where(self.metadata["class"][n0] == self.cell_classes)[0]
+            self.cell_class[n0] = idx[0]
 
 
-        cell_class_id = np.zeros((self.batch_size,), dtype=np.int64)
-        for n, i in enumerate(batch_idx):
-            idx = np.where(self.metadata["obs"]["class"][i] == self.cell_classes)[0]
-            cell_class_id[n] = idx[0]
+    def _get_cell_prop_vals_batch(self, batch_idx: List[int]):
 
-        return torch.from_numpy(cell_prop_vals), torch.from_numpy(cell_class_id)
+        return self.labels[batch_idx], self.cell_class[batch_idx]
 
-    def _get_gene_vals(self, batch_idx: List[int]):
+    def _get_gene_vals_batch(self, batch_idx: List[int]):
 
-        gene_vals = np.zeros((self.batch_size, self.n_genes), dtype=np.float32)
-        input_gene_vals = np.zeros_like(gene_vals)
-
-        x = np.memmap(
-            self.data_path, dtype='float16', mode='r', shape=(1000, self.n_genes_original,), offset=0 * self.offset
-        )[:, self.gene_idx].astype(np.float32)
-
+        target_gene_vals = np.zeros((self.batch_size, self.n_genes), dtype=np.float32)
+        input_gene_vals = np.zeros_like(target_gene_vals)
 
         for n, i in enumerate(batch_idx):
-            gene_vals[n, :] = np.memmap(
-                self.data_path, dtype='float16', mode='r', shape=(self.n_genes_original,), offset=i * self.offset
-            )[self.gene_idx].astype(np.float32)
+
+
+            if self.preload_into_memory:
+                gene_vals = self.gene_counts[i, :].astype(np.float32)
+            else:
+                gene_vals = np.memmap(
+                    self.data_path, dtype='uint8', mode='r', shape=(self.n_genes,), offset=i * self.offset
+                )[self.gene_idx].astype(np.float32)
+
             if self.bin_gene_count:
-                input_gene_vals[n, :] = self._bin_gene_count(gene_vals[n, :])
-                gene_vals[n, :] = self._normalize(gene_vals[n, :])
-            elif self.rank_order:
-                input_gene_vals[n, :] = self._rank_order(gene_vals[n, :])
-                gene_vals[n, :] = self._normalize(gene_vals[n, :])
+                input_gene_vals[n, :] = self._bin_gene_count(gene_vals)
+                target_gene_vals[n, :] = self._normalize(gene_vals)
             elif self.normalize_total or self.log_normalize:
-                input_gene_vals[n, :] = self._normalize(gene_vals[n, :])
-                gene_vals[n, :] = input_gene_vals[n, :]
-
+                input_gene_vals[n, :] = self._normalize(gene_vals)
+                target_gene_vals[n, :] = input_gene_vals[n, :]
 
         # return two copies since we'll modify gene_vals but keep gene_targets as is
-        return torch.from_numpy(input_gene_vals), torch.from_numpy(gene_vals)
+        return input_gene_vals, target_gene_vals
 
     def _bin_gene_count(self, x: np.ndarray) -> np.ndarray:
         return np.digitize(x, self.bins)
@@ -250,8 +239,9 @@ class SingleCellDataset(Dataset):
 
     def _prepare_data(self, batch_idx):
 
-        gene_vals, gene_targets = self._get_gene_vals(batch_idx)
-        cell_prop_vals, cell_class_id = self._get_cell_prop_vals(batch_idx)
+        # get input and target data, returned as numpy arrays
+        input_gene_vals, target_gene_vals = self._get_gene_vals_batch(batch_idx)
+        cell_prop_vals, cell_class_id = self._get_cell_prop_vals_batch(batch_idx)
 
         # If specified, perform data augmentation mixup or cutmix
         if self.mixup:
@@ -259,11 +249,7 @@ class SingleCellDataset(Dataset):
         elif self.cutmix_pct > 0:
             gene_vals, gene_targets, cell_prop_vals = self._cutmix(gene_vals, gene_targets, cell_prop_vals)
 
-        zero_idx = np.where(gene_vals == 0)
-        key_padding_mask = torch.zeros_like(gene_vals).detach()
-        key_padding_mask[zero_idx[0], zero_idx[1]] = 1.0
-
-        return gene_vals, key_padding_mask, gene_targets, cell_prop_vals, cell_class_id
+        return input_gene_vals, target_gene_vals, cell_prop_vals, cell_class_id
 
     def _mixup(self, gene_vals, gene_targets, cell_prop_vals):
 
@@ -333,7 +319,6 @@ class SingleCellDataset(Dataset):
                 new_cell_prop_vals[n, :] = (1 - alpha) * cell_prop_vals[n, :] + alpha * cell_prop_vals[j, :]
                 new_gene_targets[n, :] = (1 - alpha) * gene_targets[n, :] + alpha * gene_targets[j, :]
 
-
             else:
                 new_cell_prop_vals[n, :] = cell_prop_vals[n, :]
                 new_gene_targets[n, :] = gene_targets[n, :]
@@ -341,80 +326,57 @@ class SingleCellDataset(Dataset):
 
         return new_gene_vals, new_gene_targets, new_cell_prop_vals
 
-    def __getitem__(self, idx: Union[int, List[int]]):
+    def __getitem__(self, batch_idx: Union[int, List[int]]):
 
-        if isinstance(idx, int):
-            idx = [idx]
+        if isinstance(batch_idx, int):
+            v = [batch_idx]
 
-        if len(idx) != self.batch_size:
+        if len(batch_idx) != self.batch_size:
             raise ValueError("Index length not equal to batch_size")
 
-        gene_vals, key_padding_mask, gene_targets, cell_prop_vals, cell_class_id = self._prepare_data(idx)
+        pre_input_gene_vals, pre_target_gene_vals, cell_prop_vals, cell_class_id = self._prepare_data(batch_idx)
 
-        # mask indices
-        mask_col_ids = []
-        mask_row_ids = []
-        for i in range(self.batch_size):
-            nonzero_idx = torch.where(key_padding_mask[i, :] == 0)[0]
-            # randomly choose number to mask for each cell
-            # n = np.random.randint(0, self.n_mask)
+        # select which genes to use as input, and which to mask
+        # initialize gene ids ids at padding value
+        gene_ids = self.n_genes * np.ones((self.batch_size, self.n_genes_per_input,), dtype=np.int64)
+        padding_mask = np.ones((self.batch_size, self.n_genes_per_input,), dtype=np.float32)
+        gene_vals = np.zeros((self.batch_size, self.n_genes_per_input), dtype=np.float32)
+        gene_target_ids = np.zeros((self.batch_size, self.n_mask), dtype=np.int64)
+        gene_target_vals = np.zeros((self.batch_size, self.n_mask), dtype=np.float32)
+
+        for n in range(self.batch_size):
+            nonzero_idx = np.nonzero(pre_input_gene_vals[n, :])[0]
             mask_idx = np.random.choice(nonzero_idx, self.n_mask, replace=False)
-            for j in mask_idx:
-                mask_row_ids.append(i)
-                mask_col_ids.append(j)
+            gene_target_vals[n, :] = pre_target_gene_vals[n, mask_idx]
+            gene_target_ids[n, :] = mask_idx
+            remaineder_idx = list(set(nonzero_idx) - set(mask_idx))
+            if len(remaineder_idx) <= self.n_genes_per_input:
+                gene_ids[n, :len(remaineder_idx)] = remaineder_idx
+                gene_vals[n, :len(remaineder_idx)] = pre_input_gene_vals[n, remaineder_idx]
+                padding_mask[n, :len(remaineder_idx)] = 0.0
+            else:
+                idx = np.random.choice(remaineder_idx, self.n_genes_per_input, replace=False)
+                gene_ids[n, :] = idx
+                gene_vals[n, :] = pre_input_gene_vals[n, idx]
+                padding_mask[n, :] = 0.0
 
-        assert len(mask_col_ids) == len(mask_row_ids)
-
-        # the genes to predict will be masked out in the input
-        gene_targets = gene_targets[mask_row_ids, mask_col_ids].reshape(self.batch_size, -1)
-
-        gene_ids, cell_prop_ids = self._create_gene_cell_prop_ids()
-
-        # target ids are the genes that are masked out plus the cell properties to predict
-        gene_target_ids = gene_ids[mask_row_ids, mask_col_ids].reshape(self.batch_size, -1)
-
-        #if not self.rank_order:
-        # for targets, mask out gene values and assign their index to the padding_index
-        gene_ids[mask_row_ids, mask_col_ids] = self.n_genes
-        gene_vals[mask_row_ids, mask_col_ids] = 0.0
-
-        # mask out all genes with expression of zero
-        for i in range(self.batch_size):
-            zero_idx = torch.where(key_padding_mask[i, :] == 1)[0]
-            gene_ids[i, zero_idx] = self.n_genes
-            gene_vals[i, zero_idx] = 0.0 #  should already be zero...just to be safe
-
-
-        n_input_genes = np.random.choice([600, 700, 800, 900])
-        keep_col_ids = []
-        keep_row_ids = []
-        for i in range(self.batch_size):
-            nonzero_idx = torch.where(gene_vals[i, :] > 0)[0]
-            # randomly choose number to mask for each cell
-            # n = np.random.randint(0, self.n_mask)
-            idx = np.random.choice(nonzero_idx, n_input_genes, replace=False)
-            for j in idx:
-                keep_row_ids.append(i)
-                keep_col_ids.append(j)
-
-        gene_ids = gene_ids[keep_row_ids, keep_col_ids].reshape(self.batch_size, -1)
-        gene_vals = gene_vals[keep_row_ids, keep_col_ids].reshape(self.batch_size, -1)
-        key_padding_mask = key_padding_mask[keep_row_ids, keep_col_ids].reshape(self.batch_size, -1)
+        # how to query the latent output in order to predict cell properties
+        if self.cell_prop_same_ids:
+            # this will project all the class related latent info onto the same subspace, simplifying analysis
+            cell_prop_ids = np.zeros((self.batch_size, self.n_cell_properties), dtype=np.int64)
+        else:
+            cell_prop_ids = np.tile(np.arange(0, self.n_cell_properties)[None, :], (self.batch_size, 1))
 
         batch = (
             gene_ids,
             gene_target_ids,
             cell_prop_ids,
             gene_vals,
-            gene_targets,
-            key_padding_mask,
+            gene_target_vals,
+            padding_mask,
             cell_prop_vals,
             cell_class_id,
         )
-
-        if self.pin_memory:
-            for tensor in batch:
-                tensor.pin_memory()
 
         return batch
 
@@ -558,6 +520,56 @@ class DataModule(pl.LightningDataModule):
         self.mixup = mixup
         self.bin_gene_count = bin_gene_count
 
+        self._get_cell_prop_info()
+
+
+    def _get_cell_prop_info(self, max_cell_prop_val = 999):
+        """Extract the list of uniques values for each cell property (e.g. sex, cell type, etc.) to be predicted"""
+
+        self.n_cell_properties = len(self.cell_properties) if self.cell_properties is not None else 0
+
+        metadata = pickle.load(open(self.train_metadata_path, "rb"))
+
+        if self.n_cell_properties > 0:
+
+            for k, cell_prop in self.cell_properties.items():
+                # skip if required field are already present as this function can be called multiple
+                # times if using multiple GPUs
+
+                cell_vals = metadata["obs"][k]
+
+                if "freq" in self.cell_properties[k] or "mean" in self.cell_properties[k]:
+                    continue
+                if not cell_prop["discrete"]:
+                    # for cell properties with continuous value, determine the mean/std for normalization
+                    # remove nans, negative values, or anything else suspicious
+                    idx = [n for n, cv in enumerate(cell_vals) if cv >= 0 and cv < max_cell_prop_val]
+                    self.cell_properties[k]["mean"] = np.mean(cell_vals[idx])
+                    self.cell_properties[k]["std"] = np.std(cell_vals[idx])
+
+                elif cell_prop["discrete"] and cell_prop["values"] is None:
+                    # for cell properties with discrete value, determine the possible values if none were supplied
+                    # and find their distribution
+                    unique_list, counts = np.unique(cell_vals, return_counts=True)
+                    # remove nans, negative values, or anything else suspicious
+                    idx = [
+                        n for n, u in enumerate(unique_list) if (
+                            isinstance(u, str) or (u >= 0 and u < max_cell_prop_val)
+                        )
+                    ]
+                    self.cell_properties[k]["values"] = unique_list[idx]
+                    self.cell_properties[k]["freq"] = counts[idx] / np.mean(counts[idx])
+                    print("CELL PROP INFO",k, self.cell_properties[k]["freq"])
+
+                elif cell_prop["discrete"] and cell_prop["values"] is not None:
+                    unique_list, counts = np.unique(cell_vals, return_counts=True)
+                    idx = [n for n, u in enumerate(unique_list) if u in cell_prop["values"]]
+                    self.cell_properties[k]["freq"] = counts[idx] / np.mean(counts[idx])
+                    print("CELL PROP INFO", k, self.cell_properties[k]["freq"])
+
+        else:
+            self.cell_prop_dist = None
+
 
     def setup(self, stage):
 
@@ -568,7 +580,6 @@ class DataModule(pl.LightningDataModule):
             n_mask=self.n_mask,
             batch_size=self.batch_size,
             rank_order=self.rank_order,
-            pin_memory=False,
             cell_prop_same_ids=self.cell_prop_same_ids,
             cutmix_pct=self.cutmix_pct,
             mixup=self.mixup,
@@ -581,7 +592,6 @@ class DataModule(pl.LightningDataModule):
             n_mask=self.n_mask,
             batch_size=self.batch_size,
             rank_order=self.rank_order,
-            pin_memory=False,
             cell_prop_same_ids=self.cell_prop_same_ids,
             cutmix_pct=0.0,
             mixup=False,
@@ -605,7 +615,6 @@ class DataModule(pl.LightningDataModule):
             batch_sampler=None,
             sampler=sampler,
             num_workers=self.num_workers,
-            pin_memory=False,
         )
         return dl
 
@@ -621,7 +630,6 @@ class DataModule(pl.LightningDataModule):
             batch_sampler=None,
             sampler=sampler,
             num_workers=self.num_workers,
-            pin_memory=False,
         )
         return dl
 
