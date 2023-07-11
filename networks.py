@@ -68,7 +68,7 @@ class ProcessSelfAttn(nn.Module):
             dropout=dropout,
             activation="gelu",
             batch_first=True,
-            norm_first=False,  # NYM June 24
+            norm_first=True,  # NYM June 24
         )
         self.transformer = nn.TransformerEncoder(self.encoder_layer, n_layers)
 
@@ -167,7 +167,7 @@ class Exceiver(nn.Module):
 
         if self.bin_gene_count:
             self.gene_emb = nn.Embedding(self.seq_len + 1, self.seq_dim, padding_idx=self.seq_len)
-            self.gene_bin_emb = nn.Embedding(self.n_gene_bins + 1, self.seq_dim, padding_idx=self.n_gene_bins)
+            self.gene_bin_emb = nn.Embedding(self.n_gene_bins + 1, self.seq_dim, padding_idx=0)
 
         elif self.rank_order:
             self.gene_emb_low = nn.Embedding(self.seq_len + 1, self.seq_dim, padding_idx=self.seq_len)
