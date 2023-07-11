@@ -14,7 +14,7 @@ from torch.utils.data import (
     SequentialSampler,
     Subset,
 )
-
+import time
 
 class SingleCellDataset(Dataset):
     def __init__(
@@ -104,7 +104,7 @@ class SingleCellDataset(Dataset):
 
         return cell_prop_vals, cell_class_id
 
-    def _create_data(self, max_cells: Optional[int] = None, chunk_size: int = 25_000):
+    def _create_data(self, max_cells: Optional[int] = 40_000, chunk_size: int = 2_000):
 
         self.gene_counts = np.zeros((0, self.n_genes), dtype=np.uint8)
         self.labels = np.zeros((0, self.n_cell_properties), dtype=np.float32)
@@ -114,22 +114,27 @@ class SingleCellDataset(Dataset):
         n = n_cells // chunk_size + 1 if n_cells % chunk_size > 0 else n_cells // chunk_size
 
         for i in range(n):
-            print(f"Creating data, chunk {i}")
+            t0 = time.time()
+
             m = np.minimum((i + 1) * chunk_size, n_cells)
             current_idx = list(range(i * chunk_size, m))
             include_idx = [i for i, j in enumerate(current_idx) if j in self.cell_idx]
             if len(include_idx) == 0:
                 continue
 
-            temp = self.adata[i * chunk_size: m, self.gene_idx].to_memory(copy=False)
-            temp.X = np.array(temp.X.todense())
-            temp.X[temp.X >= 255] = 255
-            counts = temp.X.astype(np.uint8)
+            print(f"Creating data, chunk {i}")
+            temp = self.adata[i * chunk_size: m, self.gene_idx].to_memory(copy=True)
+            temp = temp[include_idx]
+            counts = np.array(temp.X.todense())
+            print(f"Time taken {time.time() - t0:2.2f}")
+            counts[counts >= 255] = 255
+            counts = counts.astype(np.uint8)
 
-            self.gene_counts = np.concatenate((self.gene_counts, counts[include_idx]), axis=0)
+            self.gene_counts = np.concatenate((self.gene_counts, counts), axis=0)
             cell_prop_vals, cell_class_ids = self._get_cell_prop_vals(temp)
-            self.labels = np.concatenate((self.labels, cell_prop_vals[include_idx]), axis=0)
-            self.cell_class = np.concatenate((self.cell_class, cell_class_ids[include_idx]), axis=-1)
+            self.labels = np.concatenate((self.labels, cell_prop_vals), axis=0)
+            self.cell_class = np.concatenate((self.cell_class, cell_class_ids), axis=-1)
+
 
         self.n_samples = self.gene_counts.shape[0]
 
@@ -346,7 +351,7 @@ class SingleCellDataset(Dataset):
             cell_prop_vals,
             cell_class_id,
         )
-        
+
 
         if self.pin_memory:
             for tensor in batch:
@@ -481,8 +486,8 @@ class DataModule(pl.LightningDataModule):
             )
 
         # sorting for more efficient reading from AnnData (I think ...)
-        self.train_idx = np.sort(self.train_idx)
-        self.test_idx = np.sort(self.test_idx)
+        #self.train_idx = np.sort(self.train_idx)
+        #self.test_idx = np.sort(self.test_idx)
 
 
     def setup(self, stage):

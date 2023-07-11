@@ -99,7 +99,7 @@ class MSELoss(pl.LightningModule):
                 if cell_prop["discrete"]:
                     # discrete variable, use cross entropy
                     # class values of -1 will be masked out
-                    idx = torch.nonzero(cell_prop_targets[:, n] >= 0)[0]
+                    idx = torch.where(cell_prop_targets[:, n] >= 0)[0]
                     if len(idx) > 0:
                         cell_prop_loss += self.cell_prop_cross_ent[k](
                             cell_prop_pred[k][idx], cell_prop_targets[idx, n].to(torch.int64)
@@ -107,7 +107,8 @@ class MSELoss(pl.LightningModule):
                 else:
                     # continuous variable, use MSE
                     # class values less than -999 or greater than 999 will be masked out
-                    idx = torch.nonzero(cell_prop_targets[:, n] > -999)[0]
+                    idx = torch.where(cell_prop_targets[:, n] > -999)[0]
+
                     if len(idx) > 0:
                         cell_prop_loss += self.cell_prop_mse[k](
                             cell_prop_pred[k][idx], cell_prop_targets[idx, n]
@@ -139,18 +140,18 @@ class MSELoss(pl.LightningModule):
                 if cell_prop["discrete"]:
                     predict_idx = torch.argmax(cell_prop_pred[k], dim=-1)
                     # property values of -1 will be masked out
-                    idx = torch.nonzero(cell_prop_targets[:, n] >= 0)[0]
+                    idx = torch.where(cell_prop_targets[:, n] >= 0)[0]
                     if len(idx) > 0:
                         # targets = torch.argmax(cell_prop_targets[idx, n], dim=-1).to(torch.int64)
                         self.cell_prop_accuracy[k].update(
-                            predict_idx[idx], cell_prop_targets[idx, n]
+                            predict_idx[idx], cell_prop_targets[idx, n].to(torch.int64)
                         )
                     #targets = torch.argmax(cell_prop_targets[:, n], dim=-1).to(torch.int64)
                     self.results[k].append(cell_prop_targets[idx, n].detach().cpu().numpy())
                     self.results["pred_" + k].append(cell_prop_pred[k].detach().to(torch.float32).cpu().numpy())
                 else:
                     # property values < -999  will be masked out
-                    idx = torch.nonzero(cell_prop_targets[:, n] > - 999)[0]
+                    idx = torch.where(cell_prop_targets[:, n] > - 999)[0]
                     self.cell_prop_explained_var[k].update(
                         cell_prop_pred[k][idx], cell_prop_targets[idx, n]
                     )
@@ -181,6 +182,7 @@ class MSELoss(pl.LightningModule):
         self.results["epoch"] = self.current_epoch + 1
         for k in self.cell_properties.keys():
             self.results[k] = []
+            self.results["pred_" + k] = []
         self.results["class_id"] = []
 
 
