@@ -109,11 +109,12 @@ class CreateData:
     def _get_gene_index(self):
 
         if "percent_cells" in self.anndata.var.keys():
-            self.gene_idx = self.adata.var["percent_cells"] > self.min_percent_of_cells
+            self.gene_idx = self.anndata.var["percent_cells"] > self.min_percent_of_cells
             if self.protein_coding_only:
-                self.gene_idx *= self.adata.var["protein_coding"]
+                self.gene_idx *= self.anndata.var["protein_coding"]
 
             self.gene_idx = np.where(self.gene_idx)[0]
+
         else:
             chunk_size = 10_000
             n_segments = 10
@@ -158,12 +159,16 @@ class CreateData:
             y = y.astype(np.uint8)
             fp[n * chunk_size: m, :] = y
 
+            print(f"Chunk number {n} out of {int(np.ceil(len(idx) / chunk_size))} created")
+
         # flush to memory
         fp.flush()
 
         return fp
 
     def create_datasets(self) -> None:
+
+        np.random.seed(seed=42)
 
         # randomly choose the train/test splits
         self._train_test_splits()
@@ -172,8 +177,8 @@ class CreateData:
         # must create the training set first, since gene stats are calculated using
         fp = self._create_dataset(train=True)
 
-        print("Calculating the gene expression stats...")
-        self._calculate_stats(fp)
+        #print("Calculating the gene expression stats...")
+        #self._calculate_stats(fp)
 
         print("Saving the training metadata...")
         self._create_metadata(train=True)
