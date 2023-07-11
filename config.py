@@ -15,14 +15,14 @@ cell_properties = {
 
 
 dataset_cfg = {
-    #"train_data_path": "/ssd/mssm_rush_data/train_data.dat",
-    #"train_metadata_path": "/ssd/mssm_rush_data/train_metadata.pkl",
-    #"test_data_path": "/ssd/mssm_rush_data/test_data.dat",
-    #"test_metadata_path": "/ssd/mssm_rush_data/test_metadata.pkl",
-    "train_data_path": "/home/masse/work/perceiver/rush_raw_data/train_data.dat",
-    "train_metadata_path": "/home/masse/work/perceiver/rush_raw_data/train_metadata.pkl",
-    "test_data_path": "/home/masse/work/perceiver/rush_raw_data/test_data.dat",
-    "test_metadata_path": "/home/masse/work/perceiver/rush_raw_data/test_metadata.pkl",
+    "train_data_path": "/ssd/mssm_rush_data/train_data.dat",
+    "train_metadata_path": "/ssd/mssm_rush_data/train_metadata.pkl",
+    "test_data_path": "/ssd/mssm_rush_data/test_data.dat",
+    "test_metadata_path": "/ssd/mssm_rush_data/test_metadata.pkl",
+    #"train_data_path": "/home/masse/work/perceiver/rush_raw_data/train_data.dat",
+    #"train_metadata_path": "/home/masse/work/perceiver/rush_raw_data/train_metadata.pkl",
+    #"test_data_path": "/home/masse/work/perceiver/rush_raw_data/test_data.dat",
+    #"test_metadata_path": "/home/masse/work/perceiver/rush_raw_data/test_metadata.pkl",
     "cell_properties": cell_properties,
     "batch_size": 256,
     "num_workers": 10,
@@ -37,7 +37,7 @@ dataset_cfg = {
 dataset_memory_cfg = {
     "adata_path": "/home/masse/work/perceiver/h5ad/RUSH_2023-06-08_21_44.h5ad",
     "cell_properties": cell_properties,
-    "batch_size": 256,
+    "batch_size": 64,
     "num_workers": 1,
     "n_mask": 200,
     "rank_order": False,
@@ -50,15 +50,14 @@ dataset_memory_cfg = {
 trainer_cfg = {
     "accumulate_grad_batches": 1,
     "precision": "bf16-mixed",
-    "grad_clip_value": 0.5,
+    "grad_clip_value": 0.25,
     "n_devices": 1,
 }
 
 task_cfg = {
-    # "classify": True,
     "learning_rate": 1.2e-4,
-    "weight_decay": 1e-7,
-    "warmup_steps": 12_000,
+    "weight_decay": 1e-6,
+    "warmup_steps": 10_000,
     "decay_steps": 100_000,
     "decay": 0.999988,
     "balance_classes": True,
@@ -72,7 +71,6 @@ model_cfg = {
     "query_len": 128,
     "query_dim": 512,
     "n_layers": 10,
-    "dim_feedforward": 2048,
     "n_heads": 4,
     "dropout": 0.0,
     "n_gene_bins": 16,
