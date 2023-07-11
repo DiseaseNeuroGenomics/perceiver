@@ -68,11 +68,11 @@ task_cfg = {
 }
 
 model_cfg = {
-    "seq_dim": 64,
-    "query_len": 64,
-    "query_dim": 64,
-    "n_layers": 4,
-    "dim_feedforward": 512,
+    "seq_dim": 512,
+    "query_len": 128,
+    "query_dim": 512,
+    "n_layers": 10,
+    "dim_feedforward": 2048,
     "n_heads": 4,
     "dropout": 0.0,
     "n_gene_bins": 16,

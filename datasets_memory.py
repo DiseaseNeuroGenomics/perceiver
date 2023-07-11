@@ -104,7 +104,7 @@ class SingleCellDataset(Dataset):
 
         return cell_prop_vals, cell_class_id
 
-    def _create_data(self, max_cells: Optional[int] = 50_000, chunk_size: int = 5_000):
+    def _create_data(self, max_cells: Optional[int] = None, chunk_size: int = 25_000):
 
         self.gene_counts = np.zeros((0, self.n_genes), dtype=np.uint8)
         self.labels = np.zeros((0, self.n_cell_properties), dtype=np.float32)
