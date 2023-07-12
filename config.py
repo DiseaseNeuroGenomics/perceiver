@@ -15,16 +15,16 @@ cell_properties = {
 
 
 dataset_cfg = {
-    "train_data_path": "/ssd/mssm_rush_data/train_data.dat",
-    "train_metadata_path": "/ssd/mssm_rush_data/train_metadata.pkl",
-    "test_data_path": "/ssd/mssm_rush_data/test_data.dat",
-    "test_metadata_path": "/ssd/mssm_rush_data/test_metadata.pkl",
-    #"train_data_path": "/home/masse/work/perceiver/rush_raw_data/train_data.dat",
-    #"train_metadata_path": "/home/masse/work/perceiver/rush_raw_data/train_metadata.pkl",
-    #"test_data_path": "/home/masse/work/perceiver/rush_raw_data/test_data.dat",
-    #"test_metadata_path": "/home/masse/work/perceiver/rush_raw_data/test_metadata.pkl",
+    #"train_data_path": "/ssd/mssm_rush_data/train_data.dat",
+    #"train_metadata_path": "/ssd/mssm_rush_data/train_metadata.pkl",
+    #"test_data_path": "/ssd/mssm_rush_data/test_data.dat",
+    #"test_metadata_path": "/ssd/mssm_rush_data/test_metadata.pkl",
+    "train_data_path": "/home/masse/work/perceiver/mssm_rush_data/train_data.dat",
+    "train_metadata_path": "/home/masse/work/perceiver/mssm_rush_data/train_metadata.pkl",
+    "test_data_path": "/home/masse/work/perceiver/mssm_rush_data/test_data.dat",
+    "test_metadata_path": "/home/masse/work/perceiver/mssm_rush_data/test_metadata.pkl",
     "cell_properties": cell_properties,
-    "batch_size": 256,
+    "batch_size": 64,
     "num_workers": 10,
     "n_mask": 200,
     "rank_order": False,
@@ -67,11 +67,12 @@ task_cfg = {
 }
 
 model_cfg = {
-    "seq_dim": 512,
+    "seq_dim": 256,
     "query_len": 128,
-    "query_dim": 512,
-    "n_layers": 10,
+    "query_dim": 256,
+    "n_layers": 8,
     "n_heads": 4,
+    "dim_feedforward": 1024,
     "dropout": 0.0,
     "n_gene_bins": 16,
 }
