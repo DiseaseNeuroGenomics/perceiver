@@ -98,8 +98,8 @@ class Exceiver(nn.Module):
         cell_properties: Optional[Dict[str, Any]] = None,
         dropout: float = 0.0,  # for the process attention module
         rank_order: bool = False,
-        bin_gene_count: bool = True,
-        use_class_emb: bool = True,
+        bin_gene_count: bool = False,
+        use_class_emb: bool = False,
         n_gene_bins: int = 16,
         n_classes: int = 8,
         **kwargs,
@@ -176,8 +176,12 @@ class Exceiver(nn.Module):
             self.gene_emb_low.weight.data = 0.1 * self.gene_emb_low.weight.data + 0.9 * self.gene_emb_high.weight.data
         else:
             self.gene_emb = nn.Embedding(self.seq_len + 1, self.seq_dim, padding_idx=self.seq_len)
-            self.gene_val_w = nn.Parameter(torch.ones(1, self.seq_len))
-            self.gene_val_b = nn.Parameter(torch.zeros(1, self.seq_len))
+            self.gene_val_w = nn.Embedding(self.seq_len + 1, 1, padding_idx=self.seq_len)
+            self.gene_val_b = nn.Embedding(self.seq_len + 1, 1, padding_idx=self.seq_len)
+
+            torch.nn.init.ones_(self.gene_val_w.weight)
+            torch.nn.init.zeros_(self.gene_val_b.weight)
+
 
     def _target_embedding(self, gene_ids: torch.Tensor) -> torch.Tensor:
 
@@ -205,7 +209,8 @@ class Exceiver(nn.Module):
         else:
             class_emb = self.class_emb(cell_class_id.to(torch.long)).unsqueeze(1) if self.use_class_emb else 0.0
             gene_emb = self.gene_emb(gene_ids)
-            return gene_vals.unsqueeze(2) * gene_emb + class_emb
+            vals = gene_vals.unsqueeze(2) * self.gene_val_w(gene_ids) +  self.gene_val_b(gene_ids)
+            return vals * gene_emb + class_emb
 
 
 
