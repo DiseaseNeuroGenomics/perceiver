@@ -24,19 +24,19 @@ class SingleCellDataset(Dataset):
         cell_properties: Optional[Dict[str, Any]] = None,
         n_mask: int = 100,
         batch_size: int = 32,
-        normalize_total: Optional[float] = 10_000,
+        normalize_total: Optional[float] = 5_000,
         log_normalize: bool = True,
         rank_order: bool = False,
         cell_prop_same_ids: bool = False,
         max_cell_prop_val: float = 999,
         cutmix_pct: float = 0.0,
         mixup: bool = False,
-        max_gene_val: float = 10.0,
         protein_coding_only: bool = False,
         bin_gene_count: bool = True,
         n_gene_bins: int = 16,
         preload_into_memory: bool = False,
-        restrict_cell_class: Optional[List[str]] = None,
+        restrict_cell_class: Optional[List[str]] = ["EN"],
+        n_genes_per_input: int = 4_000,
     ):
 
         self.metadata = pickle.load(open(metadata_path, "rb"))
@@ -57,29 +57,23 @@ class SingleCellDataset(Dataset):
         self.batch_size = batch_size
 
         if bin_gene_count:
-            print("Since bin_gene_count is True, setting rank_oder to False")
             rank_order = False
         if rank_order:
-            print("Since rank_oder is True, setting all other normalization to False")
-            normalize_total = None
-            log_normalize = False
             bin_gene_count = False
         if normalize_total or log_normalize:
-            print("Since log_normalize or normalize_total is True, setting all other normalization to False")
             rank_order = False
 
         self.normalize_total = normalize_total
         self.log_normalize = log_normalize
-        self.rank_order = rank_order
         self.bin_gene_count = bin_gene_count
         self.n_gene_bins = n_gene_bins
         self.cell_prop_same_ids = cell_prop_same_ids
         self.max_cell_prop_val = max_cell_prop_val
         self.cutmix_pct = cutmix_pct
         self.mixup = mixup
-        self.max_gene_val = max_gene_val
         self.protein_coding_only = protein_coding_only
         self.preload_into_memory = preload_into_memory
+        self.n_genes_per_input = n_genes_per_input
 
         self.offset = 1 * self.n_genes_original  # UINT8 is 1 bytes
 
@@ -89,12 +83,12 @@ class SingleCellDataset(Dataset):
         # this will down-sample the number if genes if specified
         # for now, need to call this AFTER calculating offset
         self._get_gene_index()
-
-        self._get_cell_prop_info()
         self._create_gene_cell_prop_ids()
 
         if self.preload_into_memory:
             self._preload_into_memory()
+
+        self._get_cell_prop_vals()
 
 
         self.bins = [0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 11, 13, 16, 22, 35, 55, 9999]
@@ -104,14 +98,13 @@ class SingleCellDataset(Dataset):
 
     def _restrict_cell_class(self, restrict_cell_class):
 
-    if restrict_cell_class is None:
-        self.cell_idx = None
-    else:
-        self.cell_idx = [n for n, c in enumerate(self.metadata["obs"]["class"]) if c in restrict_cell_class]
-        self.n_samples = len(self.cell_idx)
-
-        for k in self.metadata["obs"].keys():
-            self.metadata["obs"][k] = self.metadata["obs"][k][self.cell_idx]
+        if restrict_cell_class is None:
+            self.cell_idx = None
+        else:
+            self.cell_idx = [n for n, c in enumerate(self.metadata["obs"]["class"]) if c in restrict_cell_class]
+            self.n_samples = len(self.cell_idx)
+            for k in self.metadata["obs"].keys():
+                self.metadata["obs"][k] = self.metadata["obs"][k][self.cell_idx]
 
     def _load_into_memory(self):
 
@@ -177,9 +170,10 @@ class SingleCellDataset(Dataset):
                     else:
                         self.labels[n0, n1] = idx[0]
 
-            idx = np.where(self.metadata["class"][n0] == self.cell_classes)[0]
+            idx = np.where(self.metadata["obs"]["class"][n0] == self.cell_classes)[0]
             self.cell_class[n0] = idx[0]
 
+        print("Finished creating labels")
 
     def _get_cell_prop_vals_batch(self, batch_idx: List[int]):
 
@@ -196,8 +190,9 @@ class SingleCellDataset(Dataset):
             if self.preload_into_memory:
                 gene_vals = self.gene_counts[i, :].astype(np.float32)
             else:
+                j = i if self.cell_idx is None else self.cell_idx[i]
                 gene_vals = np.memmap(
-                    self.data_path, dtype='uint8', mode='r', shape=(self.n_genes,), offset=i * self.offset
+                    self.data_path, dtype='uint8', mode='r', shape=(self.n_genes_original,), offset=j * self.offset
                 )[self.gene_idx].astype(np.float32)
 
             if self.bin_gene_count:
@@ -233,7 +228,6 @@ class SingleCellDataset(Dataset):
 
         x = x * self.normalize_total / np.sum(x) if self.normalize_total is not None else x
         x = np.log1p(x) if self.log_normalize else x
-        x = np.minimum(x, self.max_gene_val)
 
         return x
 
@@ -338,7 +332,7 @@ class SingleCellDataset(Dataset):
 
         # select which genes to use as input, and which to mask
         # initialize gene ids ids at padding value
-        gene_ids = self.n_genes * np.ones((self.batch_size, self.n_genes_per_input,), dtype=np.int64)
+        gene_ids = self.n_genes * np.ones((self.batch_size, self.n_genes_per_input), dtype=np.int64)
         padding_mask = np.ones((self.batch_size, self.n_genes_per_input,), dtype=np.float32)
         gene_vals = np.zeros((self.batch_size, self.n_genes_per_input), dtype=np.float32)
         gene_target_ids = np.zeros((self.batch_size, self.n_mask), dtype=np.int64)
@@ -529,6 +523,9 @@ class DataModule(pl.LightningDataModule):
         self.n_cell_properties = len(self.cell_properties) if self.cell_properties is not None else 0
 
         metadata = pickle.load(open(self.train_metadata_path, "rb"))
+
+        # not a great place for this, but needed
+        self.n_genes = len(metadata["var"]["gene_name"])
 
         if self.n_cell_properties > 0:
 
