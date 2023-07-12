@@ -147,7 +147,7 @@ class MSELoss(pl.LightningModule):
                             predict_idx[idx], cell_prop_targets[idx, n].to(torch.int64)
                         )
                     #targets = torch.argmax(cell_prop_targets[:, n], dim=-1).to(torch.int64)
-                    self.results[k].append(cell_prop_targets[idx, n].detach().cpu().numpy())
+                    self.results[k].append(cell_prop_targets[:, n].detach().cpu().numpy())
                     self.results["pred_" + k].append(cell_prop_pred[k].detach().to(torch.float32).cpu().numpy())
                 else:
                     # property values < -999  will be masked out

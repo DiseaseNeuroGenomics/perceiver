@@ -3,7 +3,7 @@ import torch
 import pickle
 import pytorch_lightning as pl
 from pytorch_lightning.strategies.ddp import DDPStrategy
-from datasets_memory import DataModule
+from datasets import DataModule
 from networks import Exceiver
 from tasks import MSELoss, AdverserialLoss
 from config import dataset_cfg, task_cfg, model_cfg, trainer_cfg, dataset_memory_cfg
