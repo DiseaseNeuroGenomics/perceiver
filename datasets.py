@@ -35,7 +35,7 @@ class SingleCellDataset(Dataset):
         bin_gene_count: bool = True,
         n_gene_bins: int = 16,
         preload_into_memory: bool = False,
-        restrict_cell_class: Optional[Dict[str, Any]] = None,
+        restrictions: Optional[Dict[str, Any]] = {"Sex": "Male", "class": "EN"},
         n_genes_per_input: int = 8_000,
         max_gene_val: Optional[float] = 6.0,
         training: bool = True,
@@ -46,7 +46,7 @@ class SingleCellDataset(Dataset):
         self.cell_properties = cell_properties
         self.n_samples = len(self.metadata["obs"]["class"])
 
-        self._restrict_cell_class(restrict_cell_class)
+        self._restrict_samples(restrictions)
 
         print(f"Number of cells {self.n_samples}")
         if "gene_name" in self.metadata["var"].keys():
@@ -100,16 +100,19 @@ class SingleCellDataset(Dataset):
     def __len__(self):
         return self.n_samples
 
-    def _restrict_cell_class(self, restrict_cell_class):
+    def _restrict_samples(self, restrictions):
 
-        if restrict_cell_class is None:
+        if restrictions is None:
             self.cell_idx = None
         else:
-
-            self.cell_idx = [n for n, c in enumerate(self.metadata["obs"]["class"]) if c in restrict_cell_class]
+            cond = 1
+            for k, v in restrictions.items():
+                cond *= self.metadata["obs"][k] == v
+            self.cell_idx = np.where(cond)[0]
             self.n_samples = len(self.cell_idx)
             for k in self.metadata["obs"].keys():
                 self.metadata["obs"][k] = self.metadata["obs"][k][self.cell_idx]
+            print(f"Restricting samples. New number of samples: {self.n_samples}")
 
     def _load_into_memory(self):
 
