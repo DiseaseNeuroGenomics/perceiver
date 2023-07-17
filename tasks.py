@@ -69,9 +69,6 @@ class MSELoss(pl.LightningModule):
 
         self._create_results_dict()
 
-        print(f"automatic_optimization: {self.automatic_optimization}")
-
-
     def _create_results_dict(self):
 
         self.results = {"epoch": 0}
@@ -87,9 +84,7 @@ class MSELoss(pl.LightningModule):
         gene_pred, cell_prop_pred, latent = self.network.forward(
             gene_ids, gene_target_ids, cell_prop_ids, gene_vals, cell_class_id, key_padding_mask,
         )
-        """
         p_dims = [len(p["values"]) for p in self.cell_properties.values()]
-        """
 
         gene_loss = self.mse(gene_pred, gene_targets.unsqueeze(2))
         cell_prop_loss = 0.0
@@ -99,19 +94,18 @@ class MSELoss(pl.LightningModule):
                 if cell_prop["discrete"]:
                     # discrete variable, use cross entropy
                     # class values of -1 will be masked out
-                    idx = torch.where(cell_prop_targets[:, n] >= 0)[0]
+                    idx = torch.where(cell_prop_targets[:, n, 0] >= 0)[0]
                     if len(idx) > 0:
                         cell_prop_loss += self.cell_prop_cross_ent[k](
-                            cell_prop_pred[k][idx], cell_prop_targets[idx, n].to(torch.int64)
+                            cell_prop_pred[k][idx], cell_prop_targets[idx, n, : p_dims[n]]
                         )
                 else:
                     # continuous variable, use MSE
                     # class values less than -999 or greater than 999 will be masked out
-                    idx = torch.where(cell_prop_targets[:, n] > -999)[0]
-
+                    idx = torch.where(cell_prop_targets[:, n, 0] > -999)[0]
                     if len(idx) > 0:
                         cell_prop_loss += self.cell_prop_mse[k](
-                            cell_prop_pred[k][idx], cell_prop_targets[idx, n]
+                            cell_prop_pred[k][idx], cell_prop_targets[idx, n, 0]
                         )
 
         loss = self.task_cfg["gene_weight"] * gene_loss + self.task_cfg["cell_prop_weight"] * cell_prop_loss
@@ -128,34 +122,29 @@ class MSELoss(pl.LightningModule):
         gene_pred, cell_prop_pred, latent = self.network.forward(
             gene_ids, gene_target_ids, cell_prop_ids, gene_vals, cell_class_id, key_padding_mask,
         )
-
-        """
         p_dims = [len(p["values"]) for p in self.cell_properties.values()]
-        """
 
         self.gene_explained_var(gene_pred, gene_targets.unsqueeze(2))
 
         if self.cell_properties is not None:
             for n, (k, cell_prop) in enumerate(self.cell_properties.items()):
                 if cell_prop["discrete"]:
-                    predict_idx = torch.argmax(cell_prop_pred[k], dim=-1)
+                    predict_idx = torch.argmax(cell_prop_pred[k][..., : p_dims[n]], dim=-1).to(torch.int64)
                     # property values of -1 will be masked out
-                    idx = torch.where(cell_prop_targets[:, n] >= 0)[0]
+                    idx = torch.where(cell_prop_targets[:, n, 0] >= 0)[0]
                     if len(idx) > 0:
-                        # targets = torch.argmax(cell_prop_targets[idx, n], dim=-1).to(torch.int64)
-                        self.cell_prop_accuracy[k].update(
-                            predict_idx[idx], cell_prop_targets[idx, n].to(torch.int64)
-                        )
-                    #targets = torch.argmax(cell_prop_targets[:, n], dim=-1).to(torch.int64)
-                    self.results[k].append(cell_prop_targets[:, n].detach().cpu().numpy())
-                    self.results["pred_" + k].append(cell_prop_pred[k].detach().to(torch.float32).cpu().numpy())
+                        targets = torch.argmax(cell_prop_targets[idx, n, :], dim=-1).to(torch.int64)
+                        self.cell_prop_accuracy[k].update(predict_idx[idx], targets)
+                    targets = torch.argmax(cell_prop_targets[:, n, :], dim=-1).to(torch.int64)
+                    self.results[k].append(targets.detach().cpu().numpy())
+                    self.results["pred_" + k].append(cell_prop_pred[k][..., : p_dims[n]].detach().to(torch.float32).cpu().numpy())
                 else:
                     # property values < -999  will be masked out
-                    idx = torch.where(cell_prop_targets[:, n] > - 999)[0]
+                    idx = torch.where(cell_prop_targets[:, n, 0] > - 999)[0]
                     self.cell_prop_explained_var[k].update(
-                        cell_prop_pred[k][idx], cell_prop_targets[idx, n]
+                        cell_prop_pred[k][idx], cell_prop_targets[idx, n, 0]
                     )
-                    self.results[k].append(cell_prop_targets[:, n].detach().cpu().numpy())
+                    self.results[k].append(cell_prop_targets[:, n, 0].detach().cpu().numpy())
                     self.results["pred_" + k].append(cell_prop_pred[k].detach().cpu().to(torch.float32).numpy())
 
         self.results["class_id"].append(cell_class_id.detach().cpu().to(torch.float32).numpy())
@@ -187,8 +176,15 @@ class MSELoss(pl.LightningModule):
 
 
     def configure_optimizers(self):
+
+        base_params = [p for n, p in self.network.named_parameters() if "SubID" not in n]
+        reversal_params = [p for n, p in self.network.named_parameters() if "SubID" in n]
+
         return torch.optim.AdamW(
-            self.network.parameters(),
+            [
+                {"params": base_params},
+                {"params": reversal_params, "lr": self.task_cfg["learning_rate"] * 10, "weight_decay": 0.0},
+            ],
             lr=self.task_cfg["learning_rate"],
             weight_decay=self.task_cfg["weight_decay"],
         )
@@ -232,15 +228,15 @@ class AdverserialLoss(MSELoss):
         network,
         task_cfg,
         adv_cell_prop: str = "SubID",
-        adv_loss_ratio: float = 0.025,
-        adv_threshold: float = 6.0,
+        adv_loss_ratio: float = 0.05,
+        adv_threshold: float = 0.0,
         **kwargs
     ):
         # Initialize superclass
         super().__init__(network, task_cfg, automatic_optimization=False, **kwargs)
         print("ADV LOSS COEFF", adv_loss_ratio)
-        self.network_params = [p for n, p in self.network.named_parameters() if self.adv_cell_prop not in n]
-        self.adv_params = [p for n, p in self.network.named_parameters() if self.adv_cell_prop in n]
+        self.network_params = [p for n, p in self.network.named_parameters() if adv_cell_prop not in n]
+        self.adv_params = [p for n, p in self.network.named_parameters() if adv_cell_prop in n]
         self.adv_cell_prop = adv_cell_prop
         self.adv_loss_ratio = adv_loss_ratio
         self.adv_threshold = adv_threshold
@@ -255,9 +251,9 @@ class AdverserialLoss(MSELoss):
 
         opt0, opt1 = self.configure_optimizers()
         opt0, opt1 = self.update_lr(opt0, opt1)
-        gene_ids, gene_target_ids, cell_prop_ids, gene_vals, gene_targets, key_padding_mask, cell_prop_targets = batch
+        gene_ids, gene_target_ids, cell_prop_ids, gene_vals, gene_targets, key_padding_mask, cell_prop_targets, cell_class_id = batch
         gene_pred, cell_prop_pred, latent = self.network.forward(
-            gene_ids, gene_target_ids, cell_prop_ids, gene_vals, key_padding_mask,
+            gene_ids, gene_target_ids, cell_prop_ids, gene_vals, cell_class_id, key_padding_mask,
         )
 
         gene_loss = self.mse(gene_pred, gene_targets.unsqueeze(2))
@@ -293,11 +289,11 @@ class AdverserialLoss(MSELoss):
                 # continuous variable, use MSE
                 # class values less than -999 or greater than 999 will be masked out
                 idx = torch.where(cell_prop_targets[:, n] > -999)[0]
-                cell_prop_loss += alpha * self.cell_prop_mse[k](
+                cell_prop_loss += self.cell_prop_mse[k](
                     cell_prop_pred[k][idx], cell_prop_targets[idx, n]
                 )
 
-        loss = gene_loss + cell_prop_loss
+        loss = self.task_cfg["gene_weight"] * gene_loss + self.task_cfg["cell_prop_weight"] * cell_prop_loss
 
         opt0.zero_grad()
         self.manual_backward(loss)
