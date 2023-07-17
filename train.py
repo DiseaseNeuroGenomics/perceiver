@@ -4,7 +4,7 @@ import pickle
 import pytorch_lightning as pl
 from pytorch_lightning.strategies.ddp import DDPStrategy
 from datasets import DataModule
-from networks import Exceiver
+from networks import Exceiver, GatedMLP
 from tasks import MSELoss, AdverserialLoss
 from config import dataset_cfg, task_cfg, model_cfg, trainer_cfg, dataset_memory_cfg
 import warnings
@@ -24,7 +24,7 @@ def check_train_test_set(cfg):
     print(f"Number of train users in test set: {len(train_test_inter)}")
 
 
-def main(adverserial: bool = False):
+def main():
 
     # Set seed
     pl.seed_everything(42)
@@ -42,18 +42,16 @@ def main(adverserial: bool = False):
 
     # Create network
     model = Exceiver(**model_cfg)
+    # model = GatedMLP(**model_cfg)
 
-    if adverserial:
-        task = AdverserialLoss(network=model, task_cfg=task_cfg)
-    else:
-        task = MSELoss(network=model, task_cfg=task_cfg)
+    task = MSELoss(network=model, task_cfg=task_cfg)
 
     trainer = pl.Trainer(
         enable_checkpointing=True,
         accelerator='gpu',
         devices=trainer_cfg["n_devices"],
         max_epochs=100,
-        gradient_clip_val=trainer_cfg["grad_clip_value"] if not adverserial else None,
+        gradient_clip_val=trainer_cfg["grad_clip_value"],
         accumulate_grad_batches=trainer_cfg["accumulate_grad_batches"],
         precision=trainer_cfg["precision"],
         strategy=DDPStrategy(find_unused_parameters=True) if trainer_cfg["n_devices"] > 1 else "auto",
@@ -66,4 +64,4 @@ def main(adverserial: bool = False):
 
 if __name__ == "__main__":
 
-    main(task_cfg["adverserial"])
+    main()
