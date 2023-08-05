@@ -3,7 +3,7 @@
 # other possible data from: https://figshare.com/articles/dataset/Tabula_Sapiens_release_1_0/14267219
 # other public covid data: https://onlinelibrary.wiley.com/doi/10.1002/ctd2.104
 
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 import torch
 from torch import nn
 from functional import GradReverseLayer
@@ -281,6 +281,53 @@ class gMLP(nn.Module):
         return x + input
 
 
+class Reduce(nn.Module):
+    def __init__(self, query_len: int):
+        super().__init__()
+
+        self.linear = nn.Linear(query_len, 1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+
+        x = torch.transpose(x, 2, 1)
+        x = self.linear(x)
+
+        return torch.squeeze(x)
+
+
+class SimpleDecoder(nn.Module):
+
+    def __init__(
+        self,
+        seq_dim: int,
+        cell_properties: Dict[str, Any],
+    ):
+        super().__init__()
+
+        self.cell_mlp = nn.ModuleDict()
+        for k, cell_prop in cell_properties.items():
+            # the output size of the cell property prediction MLP will be 1 if the property is continuous;
+            # if it is discrete, then it will be the length of the possible values
+            n_targets = 1 if not cell_prop["discrete"] else len(cell_prop["values"])
+            """
+            self.cell_mlp[k] = nn.Sequential(
+                nn.LayerNorm(seq_dim),
+                nn.Linear(seq_dim, seq_dim),
+                nn.GELU(),
+                nn.Linear(seq_dim, n_targets),
+            )
+            """
+            self.cell_mlp[k] = nn.Linear(seq_dim, n_targets)
+
+    def forward(self, latent: torch.Tensor):
+
+        # Predict cell properties
+        cell_pred = {}
+        for n, k in enumerate(self.cell_mlp.keys()):
+            cell_pred[k] = torch.squeeze(self.cell_mlp[k](latent))
+
+        return cell_pred
+
 class Decoder(nn.Module):
 
     def __init__(
@@ -339,6 +386,119 @@ class Decoder(nn.Module):
             cell_pred[k] = torch.squeeze(self.cell_mlp[k](decoder_out[:, n_genes + n, :]))
 
         return gene_pred, cell_pred
+
+
+class ContrastiveGatedMLP(nn.Module):
+
+    # seq_dim: Dimension of gene representations.
+    # query_len: Size of input query, or latent representation length.
+    # query_dim: Dimension of input query.
+    # n_layers: Number of ProcessSelfAttention layers.
+    # n_heads: Number of ProcessSelfAttention heads.
+    # dim_feedforward: Dimension of ProcessSelfAttention feedforward network.
+    # dropout: Value of ProcessSelfAttention dropout.
+
+    def __init__(
+        self,
+        seq_len: int,
+        seq_dim: int,
+        query_len: int,
+        query_dim: int,
+        n_heads: int,
+        n_layers: int,
+        cell_properties: Optional[Dict[str, Any]] = None,
+        dropout: float = 0.0,  # for the process attention module
+        **kwargs,
+    ):
+
+        super().__init__()
+
+        self.seq_len = seq_len
+        self.seq_dim = seq_dim
+        # create the gene embeddings based on whether to use rank ordering
+        self._create_gene_embeddings()
+
+        # Embeddings and attention blocks
+        self.n_cell_props = len(cell_properties) if cell_properties is not None else 0
+
+        # self.output_emb = nn.Embedding(seq_len + 1, seq_dim, padding_idx=seq_len)
+        self.query_emb = nn.Parameter(torch.randn(query_len, query_dim))
+        self.cell_emb = nn.Embedding(self.n_cell_props + 1, seq_dim, padding_idx=self.n_cell_props)
+
+        self.encoder_cross_attn = CrossAttn(
+            query_dim, seq_dim, num_heads=n_heads,
+        )
+
+        self.gmlp = gMLP_stack(query_len, seq_dim, seq_dim * 2, n_layers)
+
+        self._reduce = Reduce(query_len)
+
+        self.mlp = nn.Sequential(
+            nn.Linear(seq_dim, seq_dim),
+            nn.ReLU(),
+            nn.Linear(seq_dim, seq_dim),
+        )
+
+        self._cell_predict = SimpleDecoder(seq_dim, cell_properties)
+
+    def encoder_attn_step(
+        self,
+        key_vals: torch.Tensor,
+        input_query: torch.Tensor,
+        key_padding_mask: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+
+        latent, encoder_weights = self.encoder_cross_attn(
+            input_query, key_vals, key_padding_mask
+        )
+        return latent, encoder_weights
+
+    def _create_gene_embeddings(self):
+
+        self.gene_emb = nn.Embedding(self.seq_len + 1, self.seq_dim, padding_idx=self.seq_len)
+        self.gene_val_w = nn.Embedding(self.seq_len + 1, 1, padding_idx=self.seq_len)
+        self.gene_val_b = nn.Embedding(self.seq_len + 1, 1, padding_idx=self.seq_len)
+
+        torch.nn.init.ones_(self.gene_val_w.weight)
+        torch.nn.init.zeros_(self.gene_val_b.weight)
+
+    def _gene_embedding(
+        self,
+        gene_ids: torch.Tensor,
+        gene_vals: torch.Tensor,
+    ) -> torch.Tensor:
+
+        gene_emb = self.gene_emb(gene_ids)
+        vals = gene_vals.unsqueeze(2) * self.gene_val_w(gene_ids) +  self.gene_val_b(gene_ids)
+        return vals * gene_emb
+
+    def forward(
+        self,
+        gene_ids: List[torch.Tensor],
+        gene_vals: List[torch.Tensor],
+        key_padding_mask: List[torch.Tensor],
+        n_views: int,
+    ):
+
+        z = []
+        cell_pred = []
+
+        for n in range(n_views):
+
+            input_query = self.query_emb.repeat(len(gene_ids[n]), 1, 1)
+            key_vals = self._gene_embedding(gene_ids[n], gene_vals[n])
+            # Main calculation of latent variables
+            latent, _ = self.encoder_attn_step(
+                key_vals, input_query, key_padding_mask[n]
+            )
+            latent = self.gmlp(latent)
+            h = self._reduce(latent)
+            cell_pred.append(self._cell_predict(h.detach()))
+            z.append(self.mlp(h))
+
+
+        return z, cell_pred
+
 
 
 class GatedMLP(nn.Module):
@@ -422,8 +582,6 @@ class GatedMLP(nn.Module):
         gene_emb = self.gene_emb(gene_ids)
         vals = gene_vals.unsqueeze(2) * self.gene_val_w(gene_ids) +  self.gene_val_b(gene_ids)
         return vals * gene_emb
-
-
 
     def forward(
         self,
