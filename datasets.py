@@ -353,8 +353,8 @@ class SingleCellDataset(Dataset):
             raise ValueError("Index length not equal to batch_size")
 
         if self.training:
-            # n_genes_batch = np.random.choice(np.arange(490, self.n_genes_per_input))
-            n_genes_batch = self.n_genes_per_input
+            n_genes_batch = np.random.choice(np.arange(self.n_genes_per_input, 5_000))
+            # n_genes_batch = self.n_genes_per_input
         else:
             n_genes_batch = self.n_genes_per_input
 

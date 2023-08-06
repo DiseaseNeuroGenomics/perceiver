@@ -57,9 +57,11 @@ class ContrastiveLoss(pl.LightningModule):
                 self.cell_prop_mse[k] = nn.MSELoss()
                 self.cell_prop_explained_var[k] = ExplainedVariance()
 
-        self.criterion = nn.CrossEntropyLoss()
+        #self.criterion = nn.CrossEntropyLoss()
 
         self._create_results_dict()
+
+        self.temperature = 1.0
 
     def _create_results_dict(self):
 
@@ -73,8 +75,8 @@ class ContrastiveLoss(pl.LightningModule):
 
         # zo and z1 have shape [Batch, seq_dim]
         # normalize
-        z0 = z0 / torch.norm(z0, p=2, keepdim=True)
-        z1 = z1 / torch.norm(z1, p=2, keepdim=True)
+        z0 = z0 / torch.norm(z0, p=2, dim=-1, keepdim=True)
+        z1 = z1 / torch.norm(z1, p=2, dim=-1, keepdim=True)
 
         batch_size = z1.size(0)
         n_views = 2
@@ -86,9 +88,9 @@ class ContrastiveLoss(pl.LightningModule):
         labels = (labels.unsqueeze(0) == labels.unsqueeze(1)).float()
         labels = labels.to(z0.device)
 
-        features = F.normalize(features, dim=1)
-
         similarity_matrix = torch.matmul(features, features.T)
+
+        #print("AA", labels.size(), similarity_matrix.size())
         # assert similarity_matrix.shape == (
         #     self.args.n_views * self.args.batch_size, self.args.n_views * self.args.batch_size)
         # assert similarity_matrix.shape == labels.shape
@@ -99,18 +101,32 @@ class ContrastiveLoss(pl.LightningModule):
         similarity_matrix = similarity_matrix[~mask].view(similarity_matrix.shape[0], -1)
         # assert similarity_matrix.shape == labels.shape
 
+        #print("BB", labels.size(), similarity_matrix.size(), mask.size(), labels.sum(1))
+
         # select and combine multiple positives
         positives = similarity_matrix[labels.bool()].view(n_labels, -1)
 
         # select only the negatives the negatives
-        negatives = similarity_matrix[~labels.bool()].view(similarity_matrix.shape[0], -1)
+        negatives = similarity_matrix[~labels.bool()].view(n_labels, -1)
+
+        #print("CCC", positives.size(), negatives.size())
+
 
         logits = torch.cat([positives, negatives], dim=1)
         # since the positve sample is in index 0, we set labels to zero
         labels = torch.zeros(logits.shape[0], dtype=torch.long).to(z0.device)
 
-        # logits = logits / self.args.temperature
+        logits = logits / self.temperature
         return logits, labels
+
+    def _loss(self, logits):
+
+        logits = logits - torch.max(logits)
+        n = torch.exp(logits[:, 0])
+        d = torch.exp(logits[:, 1:]).sum(dim=1)
+        loss = - torch.log(n / d)
+
+        return loss.mean()
 
     def training_step(self, batch, batch_idx):
 
@@ -131,8 +147,8 @@ class ContrastiveLoss(pl.LightningModule):
         )
         p_dims = [len(p["values"]) for p in self.cell_properties.values()]
 
-        logits, labels = self.info_nce_loss(z[0], z[0])
-        contrastive_loss = self.criterion(logits, labels)
+        logits, labels = self.info_nce_loss(z[0], z[1])
+        contrastive_loss = self._loss(logits)
 
         cell_prop_loss = 0.0
         if self.cell_properties is not None:
@@ -158,7 +174,7 @@ class ContrastiveLoss(pl.LightningModule):
 
         loss = contrastive_loss + cell_prop_loss
 
-        self.log("contrastive_loss", contrastive_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("cont_loss", contrastive_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
         self.log("cell_loss", cell_prop_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
         return loss
 
