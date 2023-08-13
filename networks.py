@@ -5,8 +5,10 @@
 
 from typing import Any, Dict, List, Optional, Tuple
 import torch
+import torch.nn.functional as F
 from torch import nn
 from functional import GradReverseLayer
+from torch.distributions.normal import Normal
 
 
 class MLP(nn.Module):
@@ -108,11 +110,11 @@ class Exceiver(nn.Module):
         dim_feedforward: int,
         cell_properties: Optional[Dict[str, Any]] = None,
         dropout: float = 0.0,  # for the process attention module
-        rank_order: bool = False,
         bin_gene_count: bool = False,
         use_class_emb: bool = False,
         n_gene_bins: int = 16,
-        n_classes: int = 8,
+        variational: bool = False,
+        bottleneck_dim: int = 32,
         **kwargs,
     ):
 
@@ -120,11 +122,8 @@ class Exceiver(nn.Module):
 
         self.seq_len = seq_len
         self.seq_dim = seq_dim
-        # rank ordering/binning gene count will change how genes are embedded
-        self.rank_order = rank_order
         self.bin_gene_count = bin_gene_count
-        self.use_class_emb = use_class_emb
-        self.n_classes = n_classes
+        self.variational = variational
         self.n_gene_bins = n_gene_bins
         # create the gene embeddings based on whether to use rank ordering
         self._create_gene_embeddings()
@@ -144,7 +143,16 @@ class Exceiver(nn.Module):
             query_dim, n_layers, n_heads, dim_feedforward, dropout,
         )
 
-        self.decoder = Decoder(seq_dim, query_dim, cell_properties, dropout)
+        if self.variational:
+            self.decoder = DecoderBottleneck(
+                seq_dim,
+                query_dim,
+                bottleneck_dim,
+                cell_properties,
+                dropout,
+            )
+        else:
+            self.decoder = Decoder(seq_dim, query_dim, cell_properties, dropout)
 
     def encoder_attn_step(
         self,
@@ -160,17 +168,10 @@ class Exceiver(nn.Module):
 
     def _create_gene_embeddings(self):
 
-        self.class_emb = nn.Embedding(self.n_classes + 1, self.seq_dim, padding_idx=self.n_classes)
-
         if self.bin_gene_count:
             self.gene_emb = nn.Embedding(self.seq_len + 1, self.seq_dim, padding_idx=self.seq_len)
             self.gene_bin_emb = nn.Embedding(self.n_gene_bins + 1, self.seq_dim, padding_idx=0)
 
-        elif self.rank_order:
-            self.gene_emb_low = nn.Embedding(self.seq_len + 1, self.seq_dim, padding_idx=self.seq_len)
-            self.gene_emb_high = nn.Embedding(self.seq_len + 1, self.seq_dim, padding_idx=self.seq_len)
-            # TODO: I think this initialization below works...need to confirm
-            self.gene_emb_low.weight.data = 0.1 * self.gene_emb_low.weight.data + 0.9 * self.gene_emb_high.weight.data
         else:
             self.gene_emb = nn.Embedding(self.seq_len + 1, self.seq_dim, padding_idx=self.seq_len)
             self.gene_val_w = nn.Embedding(self.seq_len + 1, 1, padding_idx=self.seq_len)
@@ -191,24 +192,12 @@ class Exceiver(nn.Module):
         cell_class_id: torch.Tensor,
     ) -> torch.Tensor:
 
-
         if self.bin_gene_count:
-            if self.use_class_emb:
-                return (self.gene_emb(gene_ids) +
-                        self.gene_bin_emb(gene_vals.to(torch.long)) +
-                        self.class_emb(cell_class_id.to(torch.long))[:, None, :]
-                        ) / 3
-            else:
-                return (self.gene_emb(gene_ids) + self.gene_bin_emb(gene_vals.to(torch.long))) / 2
-        elif self.rank_order:
-            return (1 - gene_vals[..., None]) * self.gene_emb_low(gene_ids) + gene_vals[..., None] * self.gene_emb_high(gene_ids)
-
+            return (self.gene_emb(gene_ids) + self.gene_bin_emb(gene_vals.to(torch.long))) / 2
         else:
-            class_emb = self.class_emb(cell_class_id.to(torch.long)).unsqueeze(1) if self.use_class_emb else 0.0
             gene_emb = self.gene_emb(gene_ids)
             vals = gene_vals.unsqueeze(2) * self.gene_val_w(gene_ids) +  self.gene_val_b(gene_ids)
-            return vals * gene_emb + class_emb
-
+            return vals * gene_emb
 
 
     def forward(
@@ -282,17 +271,19 @@ class gMLP(nn.Module):
 
 
 class Reduce(nn.Module):
-    def __init__(self, query_len: int):
+    def __init__(self, seq_dim: int, query_len: int):
         super().__init__()
 
         self.linear = nn.Linear(query_len, 1)
+        self.ln = nn.LayerNorm(seq_dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
 
         x = torch.transpose(x, 2, 1)
-        x = self.linear(x)
+        x = torch.squeeze(self.linear(x))
+        x = self.ln(x)
 
-        return torch.squeeze(x)
+        return x
 
 
 class SimpleDecoder(nn.Module):
@@ -309,15 +300,13 @@ class SimpleDecoder(nn.Module):
             # the output size of the cell property prediction MLP will be 1 if the property is continuous;
             # if it is discrete, then it will be the length of the possible values
             n_targets = 1 if not cell_prop["discrete"] else len(cell_prop["values"])
-            """
+
             self.cell_mlp[k] = nn.Sequential(
-                nn.LayerNorm(seq_dim),
                 nn.Linear(seq_dim, seq_dim),
-                nn.GELU(),
+                nn.ReLU(),
                 nn.Linear(seq_dim, n_targets),
             )
-            """
-            self.cell_mlp[k] = nn.Linear(seq_dim, n_targets)
+            # self.cell_mlp[k] = nn.Linear(seq_dim, n_targets)
 
     def forward(self, latent: torch.Tensor):
 
@@ -327,6 +316,58 @@ class SimpleDecoder(nn.Module):
             cell_pred[k] = torch.squeeze(self.cell_mlp[k](latent))
 
         return cell_pred
+
+class DecoderBottleneck(nn.Module):
+
+    def __init__(
+        self,
+        seq_dim: int,
+        query_dim: int,
+        query_len: int,
+        bottleneck_dim: int,
+        cell_properties: Dict[str, Any],
+        dropout: float = 0.0,  # for the process attention module
+    ):
+        super().__init__()
+        self.reduce = Reduce(seq_dim, query_len)
+        self.mean = nn.Linear(query_dim, bottleneck_dim)
+        self.std = nn.Linear(query_dim, bottleneck_dim)
+
+        # self.gene_mlp = nn.Linear(seq_dim, seq_dim)
+
+        self.cell_mlp = nn.ModuleDict()
+        for k, cell_prop in cell_properties.items():
+            # the output size of the cell property prediction MLP will be 1 if the property is continuous;
+            # if it is discrete, then it will be the length of the possible values
+            n_targets = 1 if not cell_prop["discrete"] else len(cell_prop["values"])
+            self.cell_mlp[k] = nn.Linear(seq_dim, n_targets)
+
+    def forward(
+        self,
+        latent: torch.Tensor,
+        training: bool = True,
+):
+
+        latent = self.reduce(latent)
+        encoder_mean = self.mean(latent)
+        encoder_std = F.softplus(self.std(latent))
+
+        # sample latent based on encoder outputs
+        if training:
+            latent_dist = Normal(encoder_mean, encoder_std)
+            x = latent_dist.sample()
+        else:
+            x = encoder_mean
+
+        # gene_pred = self.gene_mlp(x)
+        gene_pred = 0.0
+
+        cell_pred = {}
+        for n, k in enumerate(self.cell_mlp.keys()):
+            cell_pred[k] = torch.squeeze(self.cell_mlp[k](latent))
+
+        return gene_pred, cell_pred, encoder_mean, encoder_std
+
 
 class Decoder(nn.Module):
 
@@ -431,12 +472,12 @@ class ContrastiveGatedMLP(nn.Module):
 
         self.gmlp = gMLP_stack(query_len, seq_dim, seq_dim * 2, n_layers)
 
-        self._reduce = Reduce(query_len)
+        self._reduce = Reduce(seq_dim, query_len)
 
         self.mlp = nn.Sequential(
             nn.Linear(seq_dim, seq_dim),
             nn.ReLU(),
-            nn.Linear(seq_dim, seq_dim),
+            nn.Linear(seq_dim, 128),
         )
 
         self._cell_predict = SimpleDecoder(seq_dim, cell_properties)
@@ -521,6 +562,8 @@ class GatedMLP(nn.Module):
         n_layers: int,
         cell_properties: Optional[Dict[str, Any]] = None,
         dropout: float = 0.0,  # for the process attention module
+        variational: bool = False,
+        bottleneck_dim: int = 32,
         **kwargs,
     ):
 
@@ -528,6 +571,7 @@ class GatedMLP(nn.Module):
 
         self.seq_len = seq_len
         self.seq_dim = seq_dim
+        self.variational = variational
         # create the gene embeddings based on whether to use rank ordering
         self._create_gene_embeddings()
 
@@ -544,7 +588,18 @@ class GatedMLP(nn.Module):
 
         self.gmlp = gMLP_stack(query_len, seq_dim, seq_dim * 2, n_layers)
 
-        self.decoder = Decoder(seq_dim, query_dim, cell_properties, dropout)
+        if self.variational:
+            self.decoder = DecoderBottleneck(
+                seq_dim,
+                query_dim,
+                query_len,
+                bottleneck_dim,
+                cell_properties,
+                dropout,
+            )
+        else:
+            self.decoder = Decoder(seq_dim, query_dim, cell_properties, dropout)
+
 
     def encoder_attn_step(
         self,
@@ -576,7 +631,6 @@ class GatedMLP(nn.Module):
         self,
         gene_ids: torch.Tensor,
         gene_vals: torch.Tensor,
-        cell_class_id: torch.Tensor,
     ) -> torch.Tensor:
 
         gene_emb = self.gene_emb(gene_ids)
@@ -589,15 +643,15 @@ class GatedMLP(nn.Module):
         gene_target_ids: torch.Tensor,
         cell_prop_target_ids: torch.Tensor,
         gene_vals: torch.Tensor,
-        cell_class_id: torch.Tensor,
         key_padding_mask: Optional[torch.Tensor] = None,
+        training: bool = True,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
 
         input_query = self.query_emb.repeat(len(gene_ids), 1, 1)
 
         cell_query = self.cell_emb(cell_prop_target_ids)
 
-        key_vals = self._gene_embedding(gene_ids, gene_vals, cell_class_id)
+        key_vals = self._gene_embedding(gene_ids, gene_vals)
         gene_query = self._target_embedding(gene_target_ids)
 
         # Main calculation of latent variables
@@ -607,7 +661,11 @@ class GatedMLP(nn.Module):
 
         latent = self.gmlp(latent)
 
-        gene_pred, cell_pred = self.decoder(latent, gene_query, cell_query)
+        if self.variational:
+            gene_pred, cell_pred, encoder_mean, encoder_std = self.decoder(latent, training=training)
+            latent = (encoder_mean, encoder_std)
+        else:
+            gene_pred, cell_pred = self.decoder(latent, gene_query, cell_query)
 
         return gene_pred, cell_pred, latent
 

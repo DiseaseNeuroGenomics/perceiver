@@ -7,6 +7,7 @@ import pytorch_lightning as pl
 from torchmetrics import MetricCollection, ExplainedVariance
 from torchmetrics.classification import Accuracy
 import torch.nn.functional as F
+from torch.distributions.normal import Normal
 
 
 class FocalLoss(nn.Module):
@@ -45,7 +46,7 @@ class ContrastiveLoss(pl.LightningModule):
             if cell_prop["discrete"]:
                 # discrete variable, set up cross entropy module
                 weight = torch.from_numpy(
-                    np.sqrt(np.float32(np.clip(1 / cell_prop["freq"], 0.1, 10.0)))
+                    np.float32(np.clip(1 / cell_prop["freq"], 0.1, 10.0))
                 ) if task_cfg["balance_classes"] else None
                 self.cell_prop_cross_ent[k] = nn.CrossEntropyLoss(weight=weight)
                 # self.cell_prop_cross_ent[k] = FocalLoss(gamma = 2.0)
@@ -61,7 +62,7 @@ class ContrastiveLoss(pl.LightningModule):
 
         self._create_results_dict()
 
-        self.temperature = 1.0
+        self.temperature = 0.5
 
     def _create_results_dict(self):
 
@@ -71,7 +72,7 @@ class ContrastiveLoss(pl.LightningModule):
             self.results["pred_" + k] = []
             self.results["class_id"] = []
 
-    def info_nce_loss(self, z0, z1):
+    def info_nce_loss(self, z0, z1, labels):
 
         # zo and z1 have shape [Batch, seq_dim]
         # normalize
@@ -84,9 +85,13 @@ class ContrastiveLoss(pl.LightningModule):
 
         features = torch.cat([z0, z1], dim=0)
 
+        """
         labels = torch.cat([torch.arange(batch_size) for i in range(n_views)], dim=0)
         labels = (labels.unsqueeze(0) == labels.unsqueeze(1)).float()
         labels = labels.to(z0.device)
+        """
+        labels = torch.cat([labels, labels], dim=0)
+        labels = (labels.unsqueeze(0) == labels.unsqueeze(1)).float()
 
         similarity_matrix = torch.matmul(features, features.T)
 
@@ -102,7 +107,7 @@ class ContrastiveLoss(pl.LightningModule):
         # assert similarity_matrix.shape == labels.shape
 
         #print("BB", labels.size(), similarity_matrix.size(), mask.size(), labels.sum(1))
-
+        """
         # select and combine multiple positives
         positives = similarity_matrix[labels.bool()].view(n_labels, -1)
 
@@ -118,15 +123,25 @@ class ContrastiveLoss(pl.LightningModule):
 
         logits = logits / self.temperature
         return logits, labels
+        """
+        return similarity_matrix, labels
 
-    def _loss(self, logits):
+    def _loss(self, logits, labels):
 
+        logits = logits / self.temperature
         logits = logits - torch.max(logits)
+
         n = torch.exp(logits[:, 0])
         d = torch.exp(logits[:, 1:]).sum(dim=1)
         loss = - torch.log(n / d)
-
         return loss.mean()
+        """
+        logits = torch.exp(logits)
+        n = torch.sum(logits * labels)
+        d = torch.sum(logits * (1 - labels))
+        loss = - torch.log(n / d)
+        return loss.mean()
+        """
 
     def training_step(self, batch, batch_idx):
 
@@ -147,8 +162,10 @@ class ContrastiveLoss(pl.LightningModule):
         )
         p_dims = [len(p["values"]) for p in self.cell_properties.values()]
 
-        logits, labels = self.info_nce_loss(z[0], z[1])
-        contrastive_loss = self._loss(logits)
+        labels = torch.argmax(cell_prop_targets[:, 3, :7], dim=-1).to(torch.long)
+
+        logits, labels = self.info_nce_loss(z[0], z[1], labels)
+        contrastive_loss = self._loss(logits, labels)
 
         cell_prop_loss = 0.0
         if self.cell_properties is not None:
@@ -293,6 +310,13 @@ class MSELoss(pl.LightningModule):
         self.network = network
         self.task_cfg = task_cfg
         self.cell_properties = self.task_cfg["cell_properties"]
+        self.variational = task_cfg["variational"]
+
+        if self.variational:
+            self.prior = Normal(
+                torch.zeros(1, task_cfg["bottleneck_dim"]).to(torch.device("cuda")),
+                torch.ones(1, task_cfg["bottleneck_dim"]).to(torch.device("cuda")),
+            )
 
         # Functions and metrics
         self.mse = nn.MSELoss()
@@ -338,15 +362,24 @@ class MSELoss(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
 
-
         gene_ids, gene_target_ids, cell_prop_ids, gene_vals, gene_targets, key_padding_mask, cell_prop_targets, cell_class_id = batch
         gene_pred, cell_prop_pred, latent = self.network.forward(
-            gene_ids, gene_target_ids, cell_prop_ids, gene_vals, cell_class_id, key_padding_mask,
+            gene_ids, gene_target_ids, cell_prop_ids, gene_vals, key_padding_mask, training=True,
         )
         p_dims = [len(p["values"]) for p in self.cell_properties.values()]
 
-        gene_loss = self.mse(gene_pred, gene_targets.unsqueeze(2))
+        # gene_loss = self.mse(gene_pred, gene_targets.unsqueeze(2))
+        gene_loss = 0.0
         cell_prop_loss = 0.0
+
+        if self.variational:
+            beta = 1e-7 * np.clip((self.current_epoch) / 20.0, 0.0, 1.0)
+            enc_mean, enc_std = latent
+            enc_dist = Normal(enc_mean, enc_std)
+            kl_vec = torch.distributions.kl.kl_divergence(enc_dist, self.prior)
+            kl_loss = kl_vec.mean()
+            self.log("KL", kl_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
+            self.log("beta", beta, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
 
         if self.cell_properties is not None:
             for n, (k, cell_prop) in enumerate(self.cell_properties.items()):
@@ -368,51 +401,24 @@ class MSELoss(pl.LightningModule):
                         )
 
         loss = self.task_cfg["gene_weight"] * gene_loss + self.task_cfg["cell_prop_weight"] * cell_prop_loss
+        if self.variational:
+            loss = loss + beta * kl_loss
 
-        self.log("gene_loss", gene_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
+        # self.log("gene_loss", gene_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
         self.log("cell_loss", cell_prop_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
         return loss
 
 
     def validation_step(self, batch, batch_idx):
 
+
         gene_ids, gene_target_ids, cell_prop_ids, gene_vals, gene_targets, key_padding_mask, cell_prop_targets, cell_class_id = batch
-        batch_size = gene_vals.size()[0]
-        gene_pred = []
-        cell_prop_list = []
-        N = 15
-        g_vals = gene_vals.detach().cpu().numpy()
-        for _ in range(N):
-            idx_columns = []
-            idx_rows = []
-            for b in range(batch_size):
-                idx = np.nonzero(g_vals[b, :])[0]
-                replace = False if len(idx) >= 500 else True
-                idx = np.random.choice(idx, 500, replace=replace)
-                for k in idx:
-                    idx_columns.append(k)
-                    idx_rows.append(b)
-
-
-            gene_pred_temp, cell_prop_pred_temp, _ = self.network.forward(
-                gene_ids[idx_rows, idx_columns].reshape(batch_size, -1),
-                gene_target_ids, cell_prop_ids, gene_vals[idx_rows, idx_columns].view(batch_size, -1),
-                cell_class_id, key_padding_mask[idx_rows, idx_columns].reshape(batch_size, -1),
-            )
-
-            gene_pred.append(gene_pred_temp)
-            cell_prop_list.append(cell_prop_pred_temp)
-
-        gene_pred = torch.mean(torch.stack(gene_pred, dim=0), dim=0)
-        cell_prop_pred = {}
-        for k in cell_prop_list[0].keys():
-            z = torch.stack([cell_prop_list[n][k] for n in range(N)])
-            cell_prop_pred[k] = torch.mean(z, dim=0)
-
+        gene_pred, cell_prop_pred, _ = self.network.forward(
+            gene_ids, gene_target_ids, cell_prop_ids, gene_vals, key_padding_mask, training=False,
+        )
 
         p_dims = [len(p["values"]) for p in self.cell_properties.values()]
-
-        self.gene_explained_var(gene_pred, gene_targets.unsqueeze(2))
+        # self.gene_explained_var(gene_pred, gene_targets.unsqueeze(2))
 
         if self.cell_properties is not None:
             for n, (k, cell_prop) in enumerate(self.cell_properties.items()):
@@ -437,7 +443,7 @@ class MSELoss(pl.LightningModule):
 
         self.results["class_id"].append(cell_class_id.detach().cpu().to(torch.float32).numpy())
 
-        self.log("gene_ex", self.gene_explained_var, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        # self.log("gene_ex", self.gene_explained_var, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
 
         for k, v in self.cell_prop_accuracy.items():
             self.log(k, v, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)

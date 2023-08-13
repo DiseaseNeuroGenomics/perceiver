@@ -35,7 +35,7 @@ class SingleCellDataset(Dataset):
         bin_gene_count: bool = False,
         n_gene_bins: int = 16,
         preload_into_memory: bool = False,
-        restrictions: Optional[Dict[str, Any]] = None,
+        restrictions: Optional[Dict[str, Any]] = {"class": "EN", "Sex": "Male"},
         n_genes_per_input: int = 400,
         max_gene_val: Optional[float] = 6.0,
         training: bool = True,
@@ -86,6 +86,7 @@ class SingleCellDataset(Dataset):
 
         # this will down-sample the number if genes if specified
         # for now, need to call this AFTER calculating offset
+        self.ad_genes = pickle.load(open("/home/masse/work/perceiver/AD_protein.pkl","rb"))
         self._get_gene_index()
         self._create_gene_cell_prop_ids()
 
@@ -93,6 +94,7 @@ class SingleCellDataset(Dataset):
             self._preload_into_memory()
 
         self._get_cell_prop_vals()
+
 
 
         self.bins = [0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 11, 13, 16, 22, 35, 55, 9999]
@@ -133,6 +135,8 @@ class SingleCellDataset(Dataset):
             self.gene_idx = np.where(self.metadata["var"]['protein_coding'])[0]
         else:
             self.gene_idx = np.arange(self.n_genes_original)
+
+        # self.gene_idx = [n for n, v in enumerate(self.metadata["var"]['gene_name']) if v in self.ad_genes]
         self.n_genes = len(self.gene_idx)
         print(f"Sub-sampling genes. Number of genes is now {self.n_genes}")
 
@@ -160,7 +164,7 @@ class SingleCellDataset(Dataset):
 
         self.labels = np.zeros((self.n_samples, self.n_cell_properties, np.max(p_dims)), dtype=np.float32)
         self.cell_class = np.zeros((self.n_samples), dtype=np.uint8)
-        label_smoothing = {2: 0.05, 3: 0.05, 4: 0.1, 5: 0.1, 6: 0.1, 7: 0.1}
+        label_smoothing = {2: 0.05, 3: 0.05, 4: 0.1, 5: 0.1, 6: 0.1, 7: 0.1, 8: 0.0}
 
         for n0 in range(self.n_samples):
             for n1, (k, cell_prop) in enumerate(self.cell_properties.items()):
@@ -353,7 +357,7 @@ class SingleCellDataset(Dataset):
             raise ValueError("Index length not equal to batch_size")
 
         if self.training:
-            n_genes_batch = np.random.choice(np.arange(self.n_genes_per_input, 5_000))
+            n_genes_batch = np.random.choice(np.arange(800, self.n_genes_per_input))
             # n_genes_batch = self.n_genes_per_input
         else:
             n_genes_batch = self.n_genes_per_input
@@ -612,7 +616,7 @@ class DataModule(pl.LightningDataModule):
             mixup=self.mixup,
             bin_gene_count=self.bin_gene_count,
             training=True,
-            n_genes_per_input=1_000,
+            n_genes_per_input=4_000,
         )
         self.val_dataset = SingleCellDataset(
             self.test_data_path,
@@ -626,7 +630,7 @@ class DataModule(pl.LightningDataModule):
             mixup=False,
             bin_gene_count=self.bin_gene_count,
             training=False,
-            n_genes_per_input=6_000,
+            n_genes_per_input=4_000,
         )
 
         self.n_genes = self.train_dataset.n_genes
