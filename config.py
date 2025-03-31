@@ -14,71 +14,51 @@ cell_properties = {
     #"SubID": {"discrete": True, "values": None},
 }
 
+cell_properties = None
+
 
 dataset_cfg = {
-    #"train_data_path": "/ssd/mssm_rush_data/train_data.dat",
-    #"train_metadata_path": "/ssd/mssm_rush_data/train_metadata.pkl",
-    #"test_data_path": "/ssd/mssm_rush_data/test_data.dat",
-    #"test_metadata_path": "/ssd/mssm_rush_data/test_metadata.pkl",
-    "train_data_path": "/home/masse/work/perceiver/mssm_rush_data/train_data.dat",
-    "train_metadata_path": "/home/masse/work/perceiver/mssm_rush_data/train_metadata.pkl",
-    "test_data_path": "/home/masse/work/perceiver/mssm_rush_data/test_data.dat",
-    "test_metadata_path": "/home/masse/work/perceiver/mssm_rush_data/test_metadata.pkl",
+    "data_path": "/home/masse/work/data/psychAD_PD/data.dat",
+    "metadata_path": "/home/masse/work/data/psychAD_PD/metadata.pkl",
     "cell_properties": cell_properties,
-    "batch_size": 128,
+    "batch_size": 64,
     "num_workers": 10,
-    "n_mask": 1,
+    "n_mask": 12_000,
+    "n_input": 4_000,
+    "remove_sex_chrom": False,
+    "protein_coding_only": False,
     "rank_order": False,
     "cell_prop_same_ids": False,
-    "cutmix_pct": 0.0,
-    "mixup": False,
-    "bin_gene_count": False,
+    "n_bins": 32,
 }
 
-dataset_memory_cfg = {
-    "adata_path": "/home/masse/work/perceiver/h5ad/RUSH_2023-06-08_21_44.h5ad",
-    "cell_properties": cell_properties,
-    "batch_size": 128,
-    "num_workers": 1,
-    "n_mask": 100,
-    "rank_order": False,
-    "cell_prop_same_ids": True,
-    "cutmix_pct": 0.0,
-    "mixup": False,
-    "bin_gene_count": False,
-}
 
 trainer_cfg = {
-    "accumulate_grad_batches": 1,
+    "accumulate_grad_batches": 2,
     "precision": "bf16-mixed",
-    "grad_clip_value": 0.5,
+    "grad_clip_value": 1.0,
     "n_devices": 1,
 }
 
 task_cfg = {
-    "learning_rate": 1.0e-4,
-    "weight_decay": 1e-6,
+    "learning_rate": 0e-4,
+    "weight_decay": 1e-7,
     "warmup_steps": 10_000,
     "decay_steps": 150_000,
-    "decay": 0.999988,
+    "decay": 0.99999,
     "balance_classes": True,
-    "gene_weight": 0.0,
-    "cell_prop_weight": 1.0,
-    "variational": True,
-    "bottleneck_dim": 32,
+    "gene_weight": 1.0,
+    "cell_prop_weight": 0.0,
 }
 
 model_cfg = {
-    "seq_dim": 256,
+    "seq_dim": 512,
     "query_len": 64,
-    "query_dim": 256,
-    "n_layers": 20,
-    "n_heads": 4,
+    "query_dim": 512,
+    "n_layers": 16,
+    "n_heads": 8,
     "dim_feedforward": 1024,
     "dropout": 0.0,
-    "n_gene_bins": 16,
-    "variational": True,
-    "bottleneck_dim": 32,
 }
 
 test_cfg = {

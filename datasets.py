@@ -1,6 +1,7 @@
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import os
+import copy
 import torch
 import numpy as np
 import scanpy as sc
@@ -21,32 +22,36 @@ class SingleCellDataset(Dataset):
         self,
         data_path: str,
         metadata_path: str,
+        cell_idx: Optional[List[int]] = None,
         cell_properties: Optional[Dict[str, Any]] = None,
         n_mask: int = 100,
+        n_input: int = 100,
         batch_size: int = 32,
         normalize_total: Optional[float] = 10_000,
         log_normalize: bool = True,
         rank_order: bool = False,
         cell_prop_same_ids: bool = False,
         max_cell_prop_val: float = 999,
-        cutmix_pct: float = 0.0,
-        mixup: bool = False,
         protein_coding_only: bool = False,
-        bin_gene_count: bool = False,
-        n_gene_bins: int = 16,
-        preload_into_memory: bool = False,
-        restrictions: Optional[Dict[str, Any]] = {"class": "EN", "Sex": "Male"},
+        remove_sex_chrom: bool = False,
+        n_bins: Optional[int] = None,
+        restrictions: Optional[Dict[str, Any]] = None,
         n_genes_per_input: int = 400,
-        max_gene_val: Optional[float] = 6.0,
+        perturbation: Optional[Dict[str, Any]] = None,
+        cell_restrictions: Optional[Dict[str, Any]] = None,
         training: bool = True,
     ):
 
         self.metadata = pickle.load(open(metadata_path, "rb"))
+        self.metadata["obs"]["barcode"] = np.arange(len(self.metadata["obs"]["experiment"]))
         self.data_path = data_path
+        self.cell_idx = cell_idx if cell_idx is not None else np.arange(len(self.metadata["obs"]["barcode"]))
         self.cell_properties = cell_properties
-        self.n_samples = len(self.metadata["obs"]["class"])
 
-        self._restrict_samples(restrictions)
+        self.n_samples = len(self.metadata["obs"]["barcode"])
+        self.cell_restrictions = cell_restrictions
+
+        self._restrict_samples(cell_restrictions)
 
         print(f"Number of cells {self.n_samples}")
         if "gene_name" in self.metadata["var"].keys():
@@ -55,90 +60,120 @@ class SingleCellDataset(Dataset):
             self.n_genes_original = len(self.metadata["var"])
         self.n_cell_properties = len(cell_properties) if cell_properties is not None else 0
         self.n_mask = n_mask
+        self.n_input = n_input
         self.batch_size = batch_size
-
-        if bin_gene_count:
-            rank_order = False
-        if rank_order:
-            bin_gene_count = False
-        if normalize_total or log_normalize:
-            rank_order = False
+        self.perturbation = perturbation
 
         self.normalize_total = normalize_total
         self.log_normalize = log_normalize
-        self.bin_gene_count = bin_gene_count
-        self.n_gene_bins = n_gene_bins
+        self.n_bins = n_bins
         self.cell_prop_same_ids = cell_prop_same_ids
         self.max_cell_prop_val = max_cell_prop_val
-        self.cutmix_pct = cutmix_pct
-        self.mixup = mixup
-        print(f"Mixup: {self.mixup}")
         self.protein_coding_only = protein_coding_only
-        self.preload_into_memory = preload_into_memory
+        self.remove_sex_chrom = remove_sex_chrom
         self.n_genes_per_input = n_genes_per_input
-        self.max_gene_val = max_gene_val
         self.training = training
 
         self.offset = 1 * self.n_genes_original  # UINT8 is 1 bytes
 
-        # possibly use for embedding the gene inputs
-        self.cell_classes = np.array(['Astro', 'EN', 'Endo', 'IN', 'Immune', 'Mural', 'OPC', 'Oligo'])
-
-        # this will down-sample the number if genes if specified
-        # for now, need to call this AFTER calculating offset
-        self.ad_genes = pickle.load(open("/home/masse/work/perceiver/AD_protein.pkl","rb"))
         self._get_gene_index()
         self._create_gene_cell_prop_ids()
 
-        if self.preload_into_memory:
-            self._preload_into_memory()
-
         self._get_cell_prop_vals()
 
+        if n_bins is not None:
+            self.bins = [-1]
+            while len(self.bins) < n_bins:
+                m = len(self.bins)
+                if m <= 10:
+                    t = self.bins[-1] + 1
+                elif m <= 12:
+                    t = self.bins[-1] + 2
+                elif m <= 14:
+                    t = self.bins[-1] + 3
+                elif m <= 16:
+                    t = self.bins[-1] + 4
+                elif m <= 18:
+                    t = self.bins[-1] + 6
+                elif m <= 22:
+                    t = self.bins[-1] + 8
+                elif m <= 26:
+                    t = self.bins[-1] + 10
+                elif m <= 30:
+                    t = self.bins[-1] + 15
+                elif m <= 32:
+                    t = self.bins[-1] + 20
+                elif m <= 34:
+                    t = self.bins[-1] + 25
+                else:
+                    t = self.bins[-1] + 30
+                self.bins.append(t)
 
+            print("BINS")
+            print(self.bins)
 
-        self.bins = [0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 11, 13, 16, 22, 35, 55, 9999]
 
     def __len__(self):
         return self.n_samples
 
     def _restrict_samples(self, restrictions):
 
-        if restrictions is None:
-            self.cell_idx = None
-        else:
-            cond = 1
+        cond = np.zeros(len(self.metadata["obs"]["barcode"]), dtype=np.uint8)
+        cond[self.cell_idx] = 1
+
+        #cond *= (np.array(self.metadata["obs"]["source"]) == "HBCC")
+        #print("HBCC !!!!!!!!!!!!!!!!!!")
+
+
+        if restrictions is not None:
             for k, v in restrictions.items():
-                cond *= self.metadata["obs"][k] == v
-            self.cell_idx = np.where(cond)[0]
-            self.n_samples = len(self.cell_idx)
-            for k in self.metadata["obs"].keys():
-                self.metadata["obs"][k] = self.metadata["obs"][k][self.cell_idx]
-            print(f"Restricting samples. New number of samples: {self.n_samples}")
+                print(k, v)
+                if isinstance(v, list):
+                    cond *= np.sum(np.stack([np.array(self.metadata["obs"][k]) == v1 for v1 in v]), axis=0).astype(
+                        np.uint8)
+                else:
 
-    def _load_into_memory(self):
+                    print(np.sum(np.array(self.metadata["obs"][k]) == v))
+                    print(np.sum(cond), np.mean(cond))
+                    cond *= (np.array(self.metadata["obs"][k]) == v)
+                    print(np.sum(cond))
 
-        self.gene_counts = np.memmap(
-            self.data_path,
-            dtype='uint8',
-            mode='r',
-            shape=(self.n_samples, self.n_genes_original),
-            offset=0,
-        )[:, self.gene_idx]
+        self.cell_idx = np.where(cond)[0]
+        self.n_samples = len(self.cell_idx)
 
-        if self.self.cell_idx is not None:
-            self.gene_counts = self.gene_counts[self.self.cell_idx]
+        for k in self.metadata["obs"].keys():
+            self.metadata["obs"][k] = np.array(self.metadata["obs"][k])[self.cell_idx]
+
+        print(f"Restricting samples; number of samples: {self.n_samples}")
+        print(f"Number of subjects: {len(np.unique(self.metadata['obs']['SubID']))}")
+
 
     def _get_gene_index(self):
 
-        if self.protein_coding_only:
-            self.gene_idx = np.where(self.metadata["var"]['protein_coding'])[0]
-        else:
-            self.gene_idx = np.arange(self.n_genes_original)
+        N = len(self.metadata["var"]['gene_name'])
+        self.metadata["var"]['percent_cells'] = np.ones(N)
+        cond = self.metadata["var"]['percent_cells'] >= 0.0
 
-        # self.gene_idx = [n for n, v in enumerate(self.metadata["var"]['gene_name']) if v in self.ad_genes]
+        if self.remove_sex_chrom:
+            cond *= self.metadata["var"]['gene_chrom'] != "X"
+            cond *= self.metadata["var"]['gene_chrom'] != "Y"
+
+        if self.protein_coding_only:
+            cond *= self.metadata["var"]['protein_coding']
+
+        self.gene_idx = np.where(cond)[0]
+        self.gene_names = np.array(self.metadata["var"]['gene_name'])[self.gene_idx]
+
         self.n_genes = len(self.gene_idx)
         print(f"Sub-sampling genes. Number of genes is now {self.n_genes}")
+
+        if self.perturbation is not None:
+            perturb_gene = list(self.perturbation.keys())[0]
+            self.perturb_val = list(self.perturbation.values())[0]
+            self.perturb_idx = np.where(self.gene_names == perturb_gene)[0][0]
+            print(f"Gene {perturb_gene} has gene_idx = {self.perturb_idx}")
+
+
 
     def _create_gene_cell_prop_ids(self):
         """"Create the gene and class ids. Will start with the gene ids, and then concatenate
@@ -200,37 +235,32 @@ class SingleCellDataset(Dataset):
 
         print("Finished creating labels")
 
-    def _get_cell_prop_vals_batch(self, batch_idx: List[int]):
-
-        return self.labels[batch_idx], self.cell_class[batch_idx]
-
     def _get_gene_vals_batch(self, batch_idx: List[int]):
 
         target_gene_vals = np.zeros((self.batch_size, self.n_genes), dtype=np.float32)
         input_gene_vals = np.zeros_like(target_gene_vals)
+        raw_gene_vals = np.zeros_like(target_gene_vals)
 
         for n, i in enumerate(batch_idx):
 
-            if self.preload_into_memory:
-                gene_vals = self.gene_counts[i, :].astype(np.float32)
-            else:
-                j = i if self.cell_idx is None else self.cell_idx[i]
-                gene_vals = np.memmap(
-                    self.data_path, dtype='uint8', mode='r', shape=(self.n_genes_original,), offset=j * self.offset
-                )[self.gene_idx].astype(np.float32)
+            j = i if self.cell_idx is None else self.cell_idx[i]
+            gene_vals = np.memmap(
+                self.data_path, dtype='uint8', mode='r', shape=(self.n_genes_original,), offset=j * self.offset
+            )[self.gene_idx].astype(np.float32)
 
-            if self.bin_gene_count:
-                input_gene_vals[n, :] = self._bin_gene_count(gene_vals)
+            raw_gene_vals[n, :] = copy.deepcopy(gene_vals)
+
+            if self.n_bins is not None:
+                #input_gene_vals[n, :] = self._bin_gene_count(gene_vals)
+                input_gene_vals[n, :] = np.digitize(gene_vals, self.bins)
                 target_gene_vals[n, :] = self._normalize(gene_vals)
             elif self.normalize_total or self.log_normalize:
                 input_gene_vals[n, :] = self._normalize(gene_vals)
-                target_gene_vals[n, :] += input_gene_vals[n, :]
+                # target_gene_vals[n, :] += input_gene_vals[n, :]
+                target_gene_vals[n, :] = self._normalize(gene_vals)
 
         # return two copies since we'll modify gene_vals but keep gene_targets as is
-        return input_gene_vals, target_gene_vals
-
-    def _bin_gene_count(self, x: np.ndarray) -> np.ndarray:
-        return np.digitize(x, self.bins)
+        return input_gene_vals, target_gene_vals, raw_gene_vals
 
 
     def _rank_order(self, x: np.ndarray) -> np.ndarray:
@@ -250,105 +280,20 @@ class SingleCellDataset(Dataset):
 
     def _normalize(self, x: np.ndarray) -> np.ndarray:
 
-        x = x * self.normalize_total / np.sum(x) if self.normalize_total is not None else x
         x = np.log1p(x) if self.log_normalize else x
-        x = np.minimum(x, self.max_gene_val) if self.max_gene_val is not None else x
         return x
 
     def _prepare_data(self, batch_idx):
 
         # get input and target data, returned as numpy arrays
-        input_gene_vals, target_gene_vals = self._get_gene_vals_batch(batch_idx)
-        cell_prop_vals, cell_class_id = self._get_cell_prop_vals_batch(batch_idx)
+        input_gene_vals, target_gene_vals, raw_gene_vals = self._get_gene_vals_batch(batch_idx)
+        # cell_prop_vals, cell_class_id = self._get_cell_prop_vals()
 
-        # If specified, perform data augmentation mixup or cutmix
-        if self.mixup:
-            input_gene_vals, target_gene_vals, cell_prop_vals = self._mixup(
-                input_gene_vals, target_gene_vals, cell_prop_vals, cell_class_id,
-            )
-        elif self.cutmix_pct > 0:
-            input_gene_vals, target_gene_vals, cell_prop_vals = self._cutmix(
-                input_gene_vals, target_gene_vals, cell_prop_vals
-        )
-
-        return input_gene_vals, target_gene_vals, cell_prop_vals, cell_class_id
-
-    def _mixup(self, gene_vals, gene_targets, cell_prop_vals, cell_class_id):
-
-        # determine the cells with no missing values
-        p = cell_prop_vals[:, :, 0]
-        good_cond = np.sum(p < -999, axis=-1) == 0
-        good_idx = list(np.where(np.sum(p < -99999, axis=1) == 0)[0])
-
-        new_cell_prop_vals = np.zeros_like(cell_prop_vals)
-        new_gene_targets = np.zeros_like(gene_targets)
-        new_gene_vals = np.zeros_like(gene_vals)
-
-        ad = np.argmax(cell_prop_vals[:, 0, :], axis=-1)
-        dementia = np.argmax(cell_prop_vals[:, 1, :], axis=-1)
-
-        for n in range(self.batch_size):
-
-            cell_class = cell_class_id[n] == cell_class_id
-            possibilities = np.where(
-                good_cond * cell_class * (ad == ad[n]) * (dementia == dementia[n])
-            )[0]
-
-            j = np.random.choice(possibilities) if len(possibilities) > 0 else n
-            # set mix percentage
-            alpha = np.clip(np.random.exponential(0.1), 0.0, 0.5)
-            new_gene_vals[n, :] = (1 - alpha) * gene_vals[n, :] + alpha * gene_vals[j, :]
-            new_gene_targets[n, :] = (1 - alpha) * gene_targets[n, :] + alpha * gene_targets[j, :]
-            new_cell_prop_vals[n, :] = (1 - alpha) * cell_prop_vals[n, :] + alpha * cell_prop_vals[j, :]
-
-        return new_gene_vals, new_gene_targets, new_cell_prop_vals
-
-    def _cutmix(self, gene_vals, gene_targets, cell_prop_vals, continuous_block: bool = False):
-
-        # determine the cells with no missing values
-        p = cell_prop_vals[:, :, 0]
-        good_idx = list(np.where(np.sum(p < -999, axis=1) == 0)[0])
-        good_set = set(good_idx)
-
-        new_cell_prop_vals = torch.zeros_like(cell_prop_vals)
-        new_gene_targets = torch.zeros_like(gene_targets)
-        new_gene_vals = torch.zeros_like(gene_vals)
-
-        for n in range(self.batch_size):
-            if n in good_idx and np.random.rand() < self.cutmix_pct:
-                # randomly choose partner
-                j = np.random.choice(list(good_set.difference(set([n]))))
-                # set mix percentage
-                alpha = np.random.uniform(0.005, 0.995)
-
-                # mix-up gene values
-                new_gene_vals[n, :] = gene_vals[n, :]
-                if continuous_block:
-                    start_idx = np.random.randint(0, int(alpha * self.n_genes) - 1)
-                    end_idx = start_idx + int((1 - alpha) * self.n_genes)
-                    new_gene_vals[n, :] = gene_vals[n, :]
-                    new_gene_vals[n, start_idx : end_idx] = gene_vals[j, start_idx: end_idx]
-                else:
-                    idx_mix = np.random.choice(self.n_genes, int(alpha * self.n_genes), replace=False)
-                    new_gene_vals[n, idx_mix] = gene_vals[j, idx_mix]
-
-                # ensure it has enough non-zero entries if not; then revert
-                if torch.sum(new_gene_vals[n, :] > 0) < self.n_mask:
-                    new_gene_vals[n, :] = gene_vals[n, :]
-                    continue
-
-                # take the weighted average of the targets
-                new_cell_prop_vals[n, :] = (1 - alpha) * cell_prop_vals[n, :] + alpha * cell_prop_vals[j, :]
-                new_gene_targets[n, :] = (1 - alpha) * gene_targets[n, :] + alpha * gene_targets[j, :]
-
-            else:
-                new_cell_prop_vals[n, :] = cell_prop_vals[n, :]
-                new_gene_targets[n, :] = gene_targets[n, :]
-                new_gene_vals[n, :] = gene_vals[n, :]
-
-        return new_gene_vals, new_gene_targets, new_cell_prop_vals
+        return input_gene_vals, target_gene_vals, raw_gene_vals
 
     def __getitem__(self, batch_idx: Union[int, List[int]]):
+
+        max_val = 255
 
         if isinstance(batch_idx, int):
             batch_idx = [batch_idx]
@@ -357,53 +302,45 @@ class SingleCellDataset(Dataset):
             raise ValueError("Index length not equal to batch_size")
 
         if self.training:
-            n_genes_batch = np.random.choice(np.arange(800, self.n_genes_per_input))
-            # n_genes_batch = self.n_genes_per_input
+            n_genes_batch = np.random.choice(np.arange(self.n_input//5, self.n_input))
         else:
-            n_genes_batch = self.n_genes_per_input
+            n_genes_batch = self.n_input
 
-        pre_input_gene_vals, pre_target_gene_vals, cell_prop_vals, cell_class_id = self._prepare_data(batch_idx)
+
+        possible_input_genes = np.arange(self.n_genes)
+
+        pre_input_gene_vals, pre_target_gene_vals, raw_gene_vals = self._prepare_data(batch_idx)
 
         # select which genes to use as input, and which to mask
         # initialize gene ids ids at padding value
         gene_ids = self.n_genes * np.ones((self.batch_size, n_genes_batch), dtype=np.int64)
-        padding_mask = np.ones((self.batch_size, n_genes_batch), dtype=np.float32)
+        padding_mask = np.zeros((self.batch_size, n_genes_batch), dtype=np.float32)
         gene_vals = np.zeros((self.batch_size, n_genes_batch), dtype=np.float32)
         gene_target_ids = np.zeros((self.batch_size, self.n_mask), dtype=np.int64)
         gene_target_vals = np.zeros((self.batch_size, self.n_mask), dtype=np.float32)
 
         for n in range(self.batch_size):
-            nonzero_idx = np.nonzero(pre_input_gene_vals[n, :])[0]
-            mask_idx = np.random.choice(nonzero_idx, self.n_mask, replace=False)
+
+            possible_input_genes = np.where(raw_gene_vals[n, :] < max_val)[0]
+            input_idx = np.random.choice(possible_input_genes, n_genes_batch, replace=False)
+
+            gene_ids[n, :] = input_idx
+            gene_vals[n, :] = pre_input_gene_vals[n, input_idx]
+
+            remainder_idx = list(set(possible_input_genes) - set(input_idx))
+            mask_idx = np.random.choice(remainder_idx, self.n_mask, replace=False)
             gene_target_vals[n, :] = pre_target_gene_vals[n, mask_idx]
             gene_target_ids[n, :] = mask_idx
-            remaineder_idx = list(set(nonzero_idx) - set(mask_idx))
-            if len(remaineder_idx) <= n_genes_batch:
-                gene_ids[n, :len(remaineder_idx)] = remaineder_idx
-                gene_vals[n, :len(remaineder_idx)] = pre_input_gene_vals[n, remaineder_idx]
-                padding_mask[n, :len(remaineder_idx)] = 0.0
-            else:
-                idx = np.random.choice(remaineder_idx, n_genes_batch, replace=False)
-                gene_ids[n, :] = idx
-                gene_vals[n, :] = pre_input_gene_vals[n, idx]
-                padding_mask[n, :] = 0.0
 
-        # how to query the latent output in order to predict cell properties
-        if self.cell_prop_same_ids:
-            # this will project all the class related latent info onto the same subspace, simplifying analysis
-            cell_prop_ids = np.zeros((self.batch_size, self.n_cell_properties), dtype=np.int64)
-        else:
-            cell_prop_ids = np.tile(np.arange(0, self.n_cell_properties)[None, :], (self.batch_size, 1))
+            #padding_mask[n, :] = 0.0
+
 
         batch = (
             gene_ids,
             gene_target_ids,
-            cell_prop_ids,
             gene_vals,
             gene_target_vals,
             padding_mask,
-            cell_prop_vals,
-            cell_class_id,
         )
 
         return batch
@@ -519,34 +456,40 @@ class DataModule(pl.LightningDataModule):
 
     def __init__(
         self,
-        train_data_path: str,
-        train_metadata_path: str,
-        test_data_path: str,
-        test_metadata_path: str,
+        data_path: str,
+        metadata_path: str,
+        train_idx: List[int],
+        test_idx: List[int],
         batch_size: int = 32,
         num_workers: int = 16,
         n_mask: int = 100,
+        n_input: int = 100,
         rank_order: bool = False,
         cell_properties: Optional[Dict[str, Any]] = None,
         cell_prop_same_ids: bool = False,
-        cutmix_pct: float = 0.0,
-        mixup: bool = False,
-        bin_gene_count: bool = False,
+        remove_sex_chrom: bool = False,
+        protein_coding_only: bool = False,
+        n_bins: Optional[int] = False,
+        perturbation: Optional[Dict[str, Any]] = None,
+        cell_restrictions: Optional[Dict[str, Any]] = None,
     ):
         super().__init__()
-        self.train_data_path = train_data_path
-        self.train_metadata_path = train_metadata_path
-        self.test_data_path = test_data_path
-        self.test_metadata_path = test_metadata_path
+        self.data_path = data_path
+        self.metadata_path = metadata_path
+        self.train_idx = train_idx
+        self.test_idx = test_idx
         self.batch_size = batch_size
         self.num_workers = num_workers
         self.n_mask = n_mask
+        self.n_input = n_input
         self.rank_order = rank_order
         self.cell_properties = cell_properties
         self.cell_prop_same_ids = cell_prop_same_ids
-        self.cutmix_pct = cutmix_pct
-        self.mixup = mixup
-        self.bin_gene_count = bin_gene_count
+        self.remove_sex_chrom = remove_sex_chrom
+        self.protein_coding_only = protein_coding_only
+        self.n_bins = n_bins
+        self.perturbation = perturbation
+        self.cell_restrictions = cell_restrictions
 
         self._get_cell_prop_info()
 
@@ -556,7 +499,7 @@ class DataModule(pl.LightningDataModule):
 
         self.n_cell_properties = len(self.cell_properties) if self.cell_properties is not None else 0
 
-        metadata = pickle.load(open(self.train_metadata_path, "rb"))
+        metadata = pickle.load(open(self.metadata_path, "rb"))
 
         # not a great place for this, but needed
         self.n_genes = len(metadata["var"]["gene_name"])
@@ -605,30 +548,38 @@ class DataModule(pl.LightningDataModule):
     def setup(self, stage):
 
         self.train_dataset = SingleCellDataset(
-            self.train_data_path,
-            self.train_metadata_path,
+            self.data_path,
+            self.metadata_path,
+            self.train_idx,
             cell_properties=self.cell_properties,
             n_mask=self.n_mask,
+            n_input=self.n_input,
             batch_size=self.batch_size,
             rank_order=self.rank_order,
             cell_prop_same_ids=self.cell_prop_same_ids,
-            cutmix_pct=self.cutmix_pct,
-            mixup=self.mixup,
-            bin_gene_count=self.bin_gene_count,
+            n_bins=self.n_bins,
+            protein_coding_only=self.protein_coding_only,
+            remove_sex_chrom=self.remove_sex_chrom,
+            perturbation=self.perturbation,
+            cell_restrictions=self.cell_restrictions,
             training=True,
             n_genes_per_input=4_000,
         )
         self.val_dataset = SingleCellDataset(
-            self.test_data_path,
-            self.test_metadata_path,
+            self.data_path,
+            self.metadata_path,
+            self.test_idx,
             cell_properties=self.cell_properties,
             n_mask=self.n_mask,
+            n_input=self.n_input,
             batch_size=self.batch_size,
             rank_order=self.rank_order,
             cell_prop_same_ids=self.cell_prop_same_ids,
-            cutmix_pct=0.0,
-            mixup=False,
-            bin_gene_count=self.bin_gene_count,
+            n_bins=self.n_bins,
+            protein_coding_only=self.protein_coding_only,
+            remove_sex_chrom=self.remove_sex_chrom,
+            perturbation=self.perturbation,
+            cell_restrictions=self.cell_restrictions,
             training=False,
             n_genes_per_input=4_000,
         )
