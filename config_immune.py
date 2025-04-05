@@ -4,25 +4,28 @@ None indicates continuous vales"""
 
 cell_properties = None
 
+embedding_strategy = "continuous"
+n_bins = None
 
 dataset_cfg = {
-    "data_path": "/home/masse/work/data/data_for_perturb/data.dat",
-    "metadata_path": "/home/masse/work/data/data_for_perturb/metadata.pkl",
+    "data_path": "/home/masse/work/GRN/data/data_psych_ad.dat",
+    "metadata_path": "/home/masse/work/GRN/data/metadata_psych_ad.pkl",
     "cell_properties": cell_properties,
     "batch_size": 64,
     "num_workers": 10,
-    "n_mask": 2_000,
-    "n_input": 3_000,
+    "n_mask": 3_000,
+    "n_input": 4_000,
     "remove_sex_chrom": False,
     "protein_coding_only": False,
     "rank_order": False,
     "cell_prop_same_ids": False,
-    "n_bins": 32,
+    "embedding_strategy": embedding_strategy,
+    "n_bins": n_bins,
 }
 
 
 trainer_cfg = {
-    "accumulate_grad_batches": 2,
+    "accumulate_grad_batches": 1,
     "precision": "bf16-mixed",
     "grad_clip_value": 1.0,
     "n_devices": 1,
@@ -31,9 +34,9 @@ trainer_cfg = {
 task_cfg = {
     "learning_rate": 1e-4,
     "weight_decay": 1e-7,
-    "warmup_steps": 10_000,
+    "warmup_steps": 25_000,
     "decay_steps": 150_000,
-    "decay": 0.99999,
+    "decay": 0.999985,
     "balance_classes": True,
     "gene_weight": 1.0,
     "cell_prop_weight": 0.0,
@@ -47,6 +50,8 @@ model_cfg = {
     "n_heads": 8,
     "dim_feedforward": 1024,
     "dropout": 0.0,
+    "embedding_strategy": embedding_strategy,
+    "n_bins": n_bins,
 }
 
 test_cfg = {

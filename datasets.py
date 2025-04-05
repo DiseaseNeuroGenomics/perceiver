@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
 import os
 import copy
@@ -27,7 +27,7 @@ class SingleCellDataset(Dataset):
         n_mask: int = 100,
         n_input: int = 100,
         batch_size: int = 32,
-        normalize_total: Optional[float] = 10_000,
+        normalize_total: Optional[float] = None,
         log_normalize: bool = True,
         rank_order: bool = False,
         cell_prop_same_ids: bool = False,
@@ -35,6 +35,7 @@ class SingleCellDataset(Dataset):
         protein_coding_only: bool = False,
         remove_sex_chrom: bool = False,
         n_bins: Optional[int] = None,
+        embedding_strategy: Literal["binned", "continuous", "film"] = "continuous",
         restrictions: Optional[Dict[str, Any]] = None,
         n_genes_per_input: int = 400,
         perturbation: Optional[Dict[str, Any]] = None,
@@ -66,6 +67,7 @@ class SingleCellDataset(Dataset):
 
         self.normalize_total = normalize_total
         self.log_normalize = log_normalize
+        self.embedding_strategy = embedding_strategy
         self.n_bins = n_bins
         self.cell_prop_same_ids = cell_prop_same_ids
         self.max_cell_prop_val = max_cell_prop_val
@@ -81,62 +83,57 @@ class SingleCellDataset(Dataset):
 
         self._get_cell_prop_vals()
 
-        if n_bins is not None:
-            self.bins = [-1]
-            while len(self.bins) < n_bins:
-                m = len(self.bins)
-                if m <= 10:
-                    t = self.bins[-1] + 1
-                elif m <= 12:
-                    t = self.bins[-1] + 2
-                elif m <= 14:
-                    t = self.bins[-1] + 3
-                elif m <= 16:
-                    t = self.bins[-1] + 4
-                elif m <= 18:
-                    t = self.bins[-1] + 6
-                elif m <= 22:
-                    t = self.bins[-1] + 8
-                elif m <= 26:
-                    t = self.bins[-1] + 10
-                elif m <= 30:
-                    t = self.bins[-1] + 15
-                elif m <= 32:
-                    t = self.bins[-1] + 20
-                elif m <= 34:
-                    t = self.bins[-1] + 25
-                else:
-                    t = self.bins[-1] + 30
-                self.bins.append(t)
-
-            print("BINS")
-            print(self.bins)
+        if embedding_strategy == "binned":
+            self._define_bins()
 
 
     def __len__(self):
         return self.n_samples
+
+    def _define_bins(self):
+
+        self.bins = [-1]
+        while len(self.bins) < n_bins:
+            m = len(self.bins)
+            if m <= 10:
+                t = self.bins[-1] + 1
+            elif m <= 12:
+                t = self.bins[-1] + 2
+            elif m <= 14:
+                t = self.bins[-1] + 3
+            elif m <= 16:
+                t = self.bins[-1] + 4
+            elif m <= 18:
+                t = self.bins[-1] + 6
+            elif m <= 22:
+                t = self.bins[-1] + 8
+            elif m <= 26:
+                t = self.bins[-1] + 10
+            elif m <= 30:
+                t = self.bins[-1] + 15
+            elif m <= 32:
+                t = self.bins[-1] + 20
+            elif m <= 34:
+                t = self.bins[-1] + 25
+            else:
+                t = self.bins[-1] + 30
+            self.bins.append(t)
 
     def _restrict_samples(self, restrictions):
 
         cond = np.zeros(len(self.metadata["obs"]["barcode"]), dtype=np.uint8)
         cond[self.cell_idx] = 1
 
-        #cond *= (np.array(self.metadata["obs"]["source"]) == "HBCC")
-        #print("HBCC !!!!!!!!!!!!!!!!!!")
-
-
         if restrictions is not None:
             for k, v in restrictions.items():
-                print(k, v)
+
                 if isinstance(v, list):
                     cond *= np.sum(np.stack([np.array(self.metadata["obs"][k]) == v1 for v1 in v]), axis=0).astype(
                         np.uint8)
+                    print(k, v, np.sum(cond))
                 else:
-
-                    print(np.sum(np.array(self.metadata["obs"][k]) == v))
-                    print(np.sum(cond), np.mean(cond))
                     cond *= (np.array(self.metadata["obs"][k]) == v)
-                    print(np.sum(cond))
+                    print(k, v, np.sum(cond))
 
         self.cell_idx = np.where(cond)[0]
         self.n_samples = len(self.cell_idx)
@@ -250,14 +247,13 @@ class SingleCellDataset(Dataset):
 
             raw_gene_vals[n, :] = copy.deepcopy(gene_vals)
 
-            if self.n_bins is not None:
-                #input_gene_vals[n, :] = self._bin_gene_count(gene_vals)
+            if self.embedding_strategy == "binned":
                 input_gene_vals[n, :] = np.digitize(gene_vals, self.bins)
                 target_gene_vals[n, :] = self._normalize(gene_vals)
-            elif self.normalize_total or self.log_normalize:
+            else:
                 input_gene_vals[n, :] = self._normalize(gene_vals)
-                # target_gene_vals[n, :] += input_gene_vals[n, :]
                 target_gene_vals[n, :] = self._normalize(gene_vals)
+
 
         # return two copies since we'll modify gene_vals but keep gene_targets as is
         return input_gene_vals, target_gene_vals, raw_gene_vals
@@ -470,6 +466,7 @@ class DataModule(pl.LightningDataModule):
         remove_sex_chrom: bool = False,
         protein_coding_only: bool = False,
         n_bins: Optional[int] = False,
+        embedding_strategy: Literal["binned", "continuous", "film"] = "continuous",
         perturbation: Optional[Dict[str, Any]] = None,
         cell_restrictions: Optional[Dict[str, Any]] = None,
     ):
@@ -487,6 +484,7 @@ class DataModule(pl.LightningDataModule):
         self.cell_prop_same_ids = cell_prop_same_ids
         self.remove_sex_chrom = remove_sex_chrom
         self.protein_coding_only = protein_coding_only
+        self.embedding_strategy = embedding_strategy
         self.n_bins = n_bins
         self.perturbation = perturbation
         self.cell_restrictions = cell_restrictions
@@ -557,6 +555,7 @@ class DataModule(pl.LightningDataModule):
             batch_size=self.batch_size,
             rank_order=self.rank_order,
             cell_prop_same_ids=self.cell_prop_same_ids,
+            embedding_strategy = self.embedding_strategy,
             n_bins=self.n_bins,
             protein_coding_only=self.protein_coding_only,
             remove_sex_chrom=self.remove_sex_chrom,
@@ -575,6 +574,7 @@ class DataModule(pl.LightningDataModule):
             batch_size=self.batch_size,
             rank_order=self.rank_order,
             cell_prop_same_ids=self.cell_prop_same_ids,
+            embedding_strategy=self.embedding_strategy,
             n_bins=self.n_bins,
             protein_coding_only=self.protein_coding_only,
             remove_sex_chrom=self.remove_sex_chrom,

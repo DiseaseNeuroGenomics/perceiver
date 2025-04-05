@@ -3,7 +3,7 @@
 # other possible data from: https://figshare.com/articles/dataset/Tabula_Sapiens_release_1_0/14267219
 # other public covid data: https://onlinelibrary.wiley.com/doi/10.1002/ctd2.104
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple
 import numpy as np
 import torch
 import math
@@ -11,6 +11,25 @@ import torch.nn.functional as F
 from torch import nn
 from functional import GradReverseLayer
 from torch.distributions.normal import Normal
+
+
+
+class MLPEmbedding(nn.Module):
+
+    def __init__(self, embedding_dim: int):
+        super().__init__()
+        print("Creating gene value embedding")
+
+        self.mlp = nn.Sequential(
+            nn.Linear(1, 32),
+            nn.ReLU(),
+            nn.Linear(32, 64),
+            nn.ReLU(),
+            nn.Linear(64, embedding_dim),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.mlp(x.unsqueeze(-1))
 
 
 class MLP(nn.Module):
@@ -38,12 +57,12 @@ class CrossAttn(nn.Module):
         self.cross_attn = nn.MultiheadAttention(
             query_dim,
             num_heads,
-            dropout=dropout,
+            dropout=0.0,
             kdim=key_val_dim,
             vdim=key_val_dim,
             batch_first=True,
         )
-        self.mlp = MLP(query_dim, query_dim)
+        self.mlp = MLP(query_dim, query_dim, dropout=dropout)
 
     def forward(
         self,
@@ -80,7 +99,7 @@ class ProcessSelfAttn(nn.Module):
             embed_dim,
             n_heads,
             dim_feedforward,
-            dropout=dropout,
+            dropout=0.0,
             activation="gelu",
             batch_first=True,
             norm_first=True,  # NYM June 24
@@ -110,8 +129,10 @@ class Exceiver(nn.Module):
         n_layers: int,
         n_heads: int,
         dim_feedforward: int,
+        embedding_strategy: Literal["binned", "continuous", "film"] = "continuous",
         dropout: float = 0.0,  # for the process attention module
         n_bins: Optional[int] = None,
+        n_out_feature: Optional[int] = None,
         **kwargs,
     ):
 
@@ -120,6 +141,12 @@ class Exceiver(nn.Module):
         self.seq_len = seq_len
         self.seq_dim = seq_dim
         self.n_bins = n_bins
+        self.embedding_strategy = embedding_strategy
+        assert (
+                embedding_strategy != "binned" or (embedding_strategy == "binned" and n_bins is not None),
+                "n_bins must be specified if embedding strategy is 'binned'"
+        )
+
         # create the gene embeddings based on whether to use rank ordering
         self._create_gene_embeddings()
 
@@ -135,6 +162,9 @@ class Exceiver(nn.Module):
         )
 
         self.decoder = Decoder(seq_dim, query_dim, dropout)
+        if n_out_feature is not None:
+            self.feature_emb = self.query_emb = nn.Parameter(torch.randn(1, query_dim))
+            self.feature_decoder = Decoder(seq_dim, query_dim, dropout, n_out=n_out_feature)
 
     def encoder_attn_step(
         self,
@@ -150,18 +180,16 @@ class Exceiver(nn.Module):
 
     def _create_gene_embeddings(self):
 
-        if self.n_bins is not None:
+        if self.embedding_strategy == "binned":
             self.gene_emb = nn.Embedding(self.seq_len + 1, self.seq_dim, padding_idx=self.seq_len)
             self.gene_bin_emb = nn.Embedding(self.n_bins + 1, self.seq_dim, padding_idx=0)
-
-        else:
+        elif self.embedding_strategy == "continuous":
             self.gene_emb = nn.Embedding(self.seq_len + 1, self.seq_dim, padding_idx=self.seq_len)
-            self.gene_val_w = nn.Embedding(self.seq_len + 1, 1, padding_idx=self.seq_len)
-            self.gene_val_b = nn.Embedding(self.seq_len + 1, 1, padding_idx=self.seq_len)
-
-            torch.nn.init.ones_(self.gene_val_w.weight)
-            torch.nn.init.constant_(self.gene_val_b.weight, -0.25)
-
+            self.gene_val_emb = MLPEmbedding(self.seq_dim)
+        elif self.embedding_strategy == "film":
+            self.gene_emb = nn.Embedding(self.seq_len + 1, self.seq_dim, padding_idx=self.seq_len)
+            self.gene_scale = nn.Embedding(self.seq_len + 1, self.seq_dim, padding_idx=self.seq_len)
+            self.gene_val_emb = MLPEmbedding(self.seq_dim)
 
     def _target_embedding(self, gene_ids: torch.Tensor) -> torch.Tensor:
 
@@ -173,12 +201,12 @@ class Exceiver(nn.Module):
         gene_vals: torch.Tensor,
     ) -> torch.Tensor:
 
-        if self.n_bins is not None:
+        if self.embedding_strategy == "binned":
             return self.gene_emb(gene_ids) + self.gene_bin_emb(gene_vals.to(torch.long))
-        else:
-            gene_emb = self.gene_emb(gene_ids)
-            vals = gene_vals.unsqueeze(2) # * (self.gene_val_w(gene_ids) +  self.gene_val_b(gene_ids))
-            return vals * gene_emb
+        elif self.embedding_strategy == "continuous":
+            return self.gene_emb(gene_ids) + self.gene_val_emb(gene_vals)
+        elif self.embedding_strategy == "film":
+            return self.gene_emb(gene_ids) + self.gene_scale(gene_ids) * self.gene_val_emb(gene_vals)
 
 
     def forward(
@@ -187,6 +215,7 @@ class Exceiver(nn.Module):
         gene_target_ids: torch.Tensor,
         gene_vals: torch.Tensor,
         key_padding_mask: Optional[torch.Tensor] = None,
+        decode_feature: bool = False,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
 
         input_query = self.query_emb.repeat(len(gene_ids), 1, 1)
@@ -204,7 +233,13 @@ class Exceiver(nn.Module):
 
         gene_pred = self.decoder(latent, gene_query)
 
-        return gene_pred, latent
+        if decode_feature:
+            feature_query = self.feature_emb.repeat(len(gene_ids), 1, 1)
+            feature_pred = self.feature_decoder(latent, feature_query)
+        else:
+            feature_pred = None
+
+        return gene_pred, latent, feature_pred
 
 
 class gMLP_stack(nn.Module):
@@ -247,97 +282,6 @@ class gMLP(nn.Module):
         v = torch.transpose(v, 2, 1)
         x = self.linear2(u * v)
         return x + input
-
-
-class Reduce(nn.Module):
-    def __init__(self, seq_dim: int, query_len: int):
-        super().__init__()
-
-        self.linear = nn.Linear(query_len, 1)
-        self.ln = nn.LayerNorm(seq_dim)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-
-        x = torch.transpose(x, 2, 1)
-        x = torch.squeeze(self.linear(x))
-        x = self.ln(x)
-
-        return x
-
-
-class SimpleDecoder(nn.Module):
-
-    def __init__(
-        self,
-        seq_dim: int,
-        cell_properties: Dict[str, Any],
-    ):
-        super().__init__()
-
-        self.cell_mlp = nn.ModuleDict()
-        for k, cell_prop in cell_properties.items():
-            # the output size of the cell property prediction MLP will be 1 if the property is continuous;
-            # if it is discrete, then it will be the length of the possible values
-            n_targets = 1 if not cell_prop["discrete"] else len(cell_prop["values"])
-
-            self.cell_mlp[k] = nn.Sequential(
-                nn.Linear(seq_dim, seq_dim),
-                nn.ReLU(),
-                nn.Linear(seq_dim, n_targets),
-            )
-            # self.cell_mlp[k] = nn.Linear(seq_dim, n_targets)
-
-    def forward(self, latent: torch.Tensor):
-
-        # Predict cell properties
-        cell_pred = {}
-        for n, k in enumerate(self.cell_mlp.keys()):
-            cell_pred[k] = torch.squeeze(self.cell_mlp[k](latent))
-
-        return cell_pred
-
-class DecoderBottleneck(nn.Module):
-
-    def __init__(
-        self,
-        seq_dim: int,
-        query_dim: int,
-        query_len: int,
-        bottleneck_dim: int,
-        dropout: float = 0.0,  # for the process attention module
-    ):
-        super().__init__()
-        self.reduce = Reduce(seq_dim, query_len)
-        self.mean = nn.Linear(query_dim, bottleneck_dim)
-        self.std = nn.Linear(query_dim, bottleneck_dim)
-        # self.gene_mlp = nn.Linear(seq_dim, seq_dim)
-
-
-    def forward(
-        self,
-        latent: torch.Tensor,
-        training: bool = True,
-):
-
-        latent = self.reduce(latent)
-        encoder_mean = self.mean(latent)
-        encoder_std = F.softplus(self.std(latent))
-
-        # sample latent based on encoder outputs
-        if training:
-            latent_dist = Normal(encoder_mean, encoder_std)
-            x = latent_dist.sample()
-        else:
-            x = encoder_mean
-
-        # gene_pred = self.gene_mlp(x)
-        gene_pred = 0.0
-
-        cell_pred = {}
-        for n, k in enumerate(self.cell_mlp.keys()):
-            cell_pred[k] = torch.squeeze(self.cell_mlp[k](latent))
-
-        return gene_pred, cell_pred, encoder_mean, encoder_std
 
 
 class ATACDecoder(nn.Module):
@@ -387,6 +331,7 @@ class Decoder(nn.Module):
         seq_dim: int,
         query_dim: int,
         dropout: float = 0.0,  # for the process attention module
+        n_out: int = 1,
     ):
 
         super().__init__()
@@ -400,7 +345,7 @@ class Decoder(nn.Module):
             nn.Linear(seq_dim, seq_dim),
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(seq_dim, 1),
+            nn.Linear(seq_dim, n_out),
         )
 
     def forward(self, latent: torch.Tensor, gene_query: torch.Tensor):
