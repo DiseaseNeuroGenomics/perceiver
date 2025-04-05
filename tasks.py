@@ -332,9 +332,13 @@ class AllToAllPerutbation(pl.LightningModule):
         #for k in ["gene_target_ids", "gene_targets", "gene_vals", "gene_ids", "gene_pred"]:
         #    self.results[k] = []
         N = len(self.gene_names)
-        self.results["delta"] = np.zeros((N, N), dtype=np.float32)
-        self.results["delta1"] = np.zeros((N, N), dtype=np.float32)
-        self.results["count"] = np.zeros((N, N), dtype=np.int32)
+        self.results["pos_delta"] = np.zeros((N, N), dtype=np.float32)
+        self.results["pos_var"] = np.zeros((N, N), dtype=np.float32)
+        self.results["pos_count"] = np.zeros((N, N), dtype=np.uint16)
+
+        self.results["neg_delta"] = np.zeros((N, N), dtype=np.float32)
+        self.results["neg_var"] = np.zeros((N, N), dtype=np.float32)
+        self.results["neg_count"] = np.zeros((N, N), dtype=np.uint16)
 
     def _copy_source_code(self):
 
@@ -363,7 +367,7 @@ class AllToAllPerutbation(pl.LightningModule):
 
         n_input_genes = gene_vals.shape[1]
 
-        gene_pred, _ = self.network.forward(
+        gene_pred, _, _ = self.network.forward(
             gene_ids, gene_target_ids, gene_vals, key_padding_mask,
         )
 
@@ -372,31 +376,75 @@ class AllToAllPerutbation(pl.LightningModule):
 
         for n in range(n_iters):
 
+            rnd_inc = torch.from_numpy(np.random.choice([1, 2, 3], size=(batch_size,), replace=True)).to(gene_vals.device)
             gene_vals_perturb = copy.deepcopy(gene_vals.clone().detach())
             # print("MEAN GEN VALS", gene_vals.mean())
             gene_vals_perturb[:, rnd_idx[n]] = torch.clip(
-                gene_vals_perturb[:, rnd_idx[n]] + 3, 0, self.n_bins-1
+                gene_vals_perturb[:, rnd_idx[n]] + rnd_inc, 0, self.n_bins-1
             )
 
-            #gene_vals_perturb[:, rnd_idx[n]] = 0
-
-
-            gene_pred_perturb, _ = self.network.forward(
+            gene_pred_perturb, _, _ = self.network.forward(
                 gene_ids, gene_target_ids, gene_vals_perturb, key_padding_mask,
             )
 
             source_idx = gene_ids[:, rnd_idx[n]].to(torch.int16).detach().cpu().numpy()
-            delta1 = gene_pred_perturb.to(torch.float32).detach().cpu().numpy() - gene_pred.to(torch.float32).detach().cpu().numpy()
-
-            delta = gene_pred_perturb.squeeze().to(torch.float32).detach().cpu().numpy() - gene_targets.to(
-                torch.float32).detach().cpu().numpy()
-
-            delta1 = delta1[:, :, 0]
+            delta = gene_pred_perturb.to(torch.float32).detach().cpu().numpy() - gene_pred.to(torch.float32).detach().cpu().numpy()
+            delta = delta[:, :, 0]
+            #print("A", delta.std(), torch.sum(torch.abs(gene_vals_perturb - gene_vals)))
 
             for i in range(batch_size):
-                self.results["count"][source_idx[i], target_idx[i]] += 1
-                self.results["delta"][source_idx[i], target_idx[i]] += delta[i, :]
-                self.results["delta1"][source_idx[i], target_idx[i]] += delta1[i, :]
+                count = self.results["pos_count"][source_idx[i], target_idx[i]]
+                prev_mean = self.results["pos_delta"][source_idx[i], target_idx[i]] / (1e-6 + count)
+                prev_var = self.results["pos_var"][source_idx[i], target_idx[i]]
+
+                self.results["pos_count"][source_idx[i], target_idx[i]] += 1
+                self.results["pos_delta"][source_idx[i], target_idx[i]] += delta[i, :]
+
+                count = self.results["pos_count"][source_idx[i], target_idx[i]]
+                current_mean = self.results["pos_delta"][source_idx[i], target_idx[i]] / (1e-6 + count)
+
+                current_var = prev_var + (delta[i, :] - prev_mean) * (delta[i, :] - current_mean)
+                self.results["pos_var"][source_idx[i], target_idx[i]] = current_var
+
+        for n in range(n_iters):
+
+            gene_vals_perturb = copy.deepcopy(gene_vals.clone().detach())
+            rnd_idx = np.zeros(batch_size, dtype=np.int64)
+            for i in range(batch_size):
+                idx = torch.where(gene_vals_perturb[i, :] >= 1)[0]
+                if len(idx) > 0:
+                    rnd_idx[i] = np.random.choice(idx.cpu().numpy())
+                    #gene_vals_perturb[i, rnd_idx[i]] = torch.clip(
+                    #    gene_vals_perturb[i, rnd_idx[i]] - 1, 0, self.n_bins-1
+                    #)
+                    gene_vals_perturb[i, rnd_idx[i]] = 0
+
+
+            gene_pred_perturb, _, _ = self.network.forward(
+                gene_ids, gene_target_ids, gene_vals_perturb, key_padding_mask,
+            )
+
+            source_idx = gene_ids[torch.arange(batch_size), rnd_idx].to(torch.int16).detach().cpu().numpy()
+
+
+            delta = gene_pred_perturb.to(torch.float32).detach().cpu().numpy() - gene_pred.to(torch.float32).detach().cpu().numpy()
+            delta = delta[:, :, 0]
+            #print("B", delta.std(), torch.sum(torch.abs(gene_vals_perturb - gene_vals)))
+
+            for i in range(batch_size):
+                count = self.results["neg_count"][source_idx[i], target_idx[i]]
+                prev_mean = self.results["neg_delta"][source_idx[i], target_idx[i]] / (1e-6 + count)
+                prev_var = self.results["neg_var"][source_idx[i], target_idx[i]]
+
+                self.results["neg_count"][source_idx[i], target_idx[i]] += 1
+                self.results["neg_delta"][source_idx[i], target_idx[i]] += delta[i, :]
+
+                count = self.results["neg_count"][source_idx[i], target_idx[i]]
+                current_mean = self.results["neg_delta"][source_idx[i], target_idx[i]] / (1e-6 + count)
+
+                current_var = prev_var + (delta[i, :] - prev_mean) * (delta[i, :] - current_mean)
+                self.results["neg_var"][source_idx[i], target_idx[i]] = current_var
+
 
     def on_validation_epoch_end(self):
 
