@@ -1,10 +1,11 @@
 
 import torch
 import pickle
+import numpy as np
 import pytorch_lightning as pl
 from pytorch_lightning.strategies.ddp import DDPStrategy
 from datasets import DataModule
-from networks import Exceiver, GatedMLP
+from networks import Exceiver, GatedMLP, load_model
 from tasks import MSELoss, AdverserialLoss
 from config_immune import dataset_cfg, task_cfg, model_cfg, trainer_cfg
 import warnings
@@ -51,11 +52,12 @@ def main(train_idx, test_idx):
     model_cfg["seq_len"] = dm.n_genes
     model_cfg["cell_properties"] = dm.cell_properties
     model_cfg["n_bins"] = dataset_cfg["n_bins"]
+    model_cfg["RDA"] = dataset_cfg["RDA"]
     task_cfg["cell_properties"] = dm.cell_properties
 
     # Create network
-    model = Exceiver(**model_cfg)
-    # model = GatedMLP(**model_cfg)
+    # model = Exceiver(**model_cfg)
+    model = GatedMLP(**model_cfg)
 
     for n, p in model.named_parameters():
         print(n, p.size())
@@ -66,14 +68,13 @@ def main(train_idx, test_idx):
         enable_checkpointing=True,
         accelerator='gpu',
         devices=trainer_cfg["n_devices"],
-        max_epochs=1000,
+        max_epochs=1_000,
         gradient_clip_val=trainer_cfg["grad_clip_value"],
         accumulate_grad_batches=trainer_cfg["accumulate_grad_batches"],
         precision=trainer_cfg["precision"],
         strategy=DDPStrategy(find_unused_parameters=True) if trainer_cfg["n_devices"] > 1 else "auto",
-        limit_train_batches=10_000,
-        limit_val_batches=2_000,
-        check_val_every_n_epoch=1,
+        val_check_interval=10_000,
+        limit_val_batches=1_200,
     )
 
     trainer.fit(task, dm)
@@ -81,10 +82,13 @@ def main(train_idx, test_idx):
 
 if __name__ == "__main__":
 
-    splits = pickle.load(open("/home/masse/work/data/data_for_perturb/splits_full.pkl", "rb"))
+    meta = pickle.load(open(dataset_cfg["metadata_path"], "rb"))
+    if "splits" in meta:
+        train_idx = meta["splits"]["train_idx"]
+        test_idx = meta["splits"]["test_idx"]
+    else:
+        N = len(meta["obs"]["experiment"])
+        test_idx = np.random.choice(N, N//100, replace=False)
+        train_idx = list(set(np.arange(N)) - set(test_idx))
 
-    #for split_num in range(0, 20):
-
-    train_idx = splits["train_idx"]
-    test_idx = splits["test_idx"]
     main(train_idx, test_idx)

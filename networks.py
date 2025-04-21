@@ -9,105 +9,7 @@ import torch
 import math
 import torch.nn.functional as F
 from torch import nn
-from functional import GradReverseLayer
-from torch.distributions.normal import Normal
-
-
-
-class MLPEmbedding(nn.Module):
-
-    def __init__(self, embedding_dim: int):
-        super().__init__()
-        print("Creating gene value embedding")
-
-        self.mlp = nn.Sequential(
-            nn.Linear(1, 32),
-            nn.ReLU(),
-            nn.Linear(32, 64),
-            nn.ReLU(),
-            nn.Linear(64, embedding_dim),
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.mlp(x.unsqueeze(-1))
-
-
-class MLP(nn.Module):
-
-    def __init__(self, input_dim: int, hidden_dim: int, dropout: float = 0.0):
-        super().__init__()
-
-        self.mlp = nn.Sequential(
-            nn.LayerNorm(input_dim),
-            nn.Linear(input_dim, hidden_dim),
-            nn.GELU(),
-            nn.Linear(hidden_dim, input_dim),
-            nn.Dropout(dropout),
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.mlp(x)
-
-class CrossAttn(nn.Module):
-    def __init__(self, query_dim: int, key_val_dim: int, num_heads: int = 4, dropout: float = 0.0):
-        super().__init__()
-        self.layernorm_kv = nn.LayerNorm(key_val_dim)
-        self.layernorm_q = nn.LayerNorm(query_dim)
-        print("CrossAttn drop", dropout)
-        self.cross_attn = nn.MultiheadAttention(
-            query_dim,
-            num_heads,
-            dropout=0.0,
-            kdim=key_val_dim,
-            vdim=key_val_dim,
-            batch_first=True,
-        )
-        self.mlp = MLP(query_dim, query_dim, dropout=dropout)
-
-    def forward(
-        self,
-        query: torch.Tensor,
-        key_val: torch.Tensor,
-        key_padding_mask: Optional[torch.Tensor] = None,
-        residual: bool = True,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        norm_k = self.layernorm_kv(key_val)
-        norm_v = self.layernorm_kv(key_val)
-        norm_q = self.layernorm_q(query)
-
-        # TODO: do I need to output weights??
-        latent, weights = self.cross_attn(norm_q, norm_k, norm_v, key_padding_mask)
-        # residual connection
-        if residual:
-            latent = latent + query
-        latent = self.mlp(latent) + latent
-        return latent, weights
-
-
-class ProcessSelfAttn(nn.Module):
-    def __init__(
-        self,
-        embed_dim: int,
-        n_layers: int,
-        n_heads: int,
-        dim_feedforward: int = 2048,
-        dropout: float = 0.0,
-    ):
-        super().__init__()
-        print("ProcessSelfAttn drop", dropout)
-        self.encoder_layer = nn.TransformerEncoderLayer(
-            embed_dim,
-            n_heads,
-            dim_feedforward,
-            dropout=0.0,
-            activation="gelu",
-            batch_first=True,
-            norm_first=True,  # NYM June 24
-        )
-        self.transformer = nn.TransformerEncoder(self.encoder_layer, n_layers)
-
-    def forward(self, latent: torch.Tensor) -> torch.Tensor:
-        return self.transformer(latent)
+from modules import MLP, ProcessSelfAttn, MLPEmbedding, Decoder, CrossAttn, gMLP_stack
 
 
 class Exceiver(nn.Module):
@@ -191,9 +93,12 @@ class Exceiver(nn.Module):
             self.gene_scale = nn.Embedding(self.seq_len + 1, self.seq_dim, padding_idx=self.seq_len)
             self.gene_val_emb = MLPEmbedding(self.seq_dim)
 
+        self.target_emb = nn.Embedding(self.seq_len + 1, self.seq_dim, padding_idx=self.seq_len)
+
     def _target_embedding(self, gene_ids: torch.Tensor) -> torch.Tensor:
 
-        return self.gene_emb(gene_ids)
+        #return self.gene_emb(gene_ids)
+        return self.target_emb(gene_ids)
 
     def _gene_embedding(
         self,
@@ -242,48 +147,6 @@ class Exceiver(nn.Module):
         return gene_pred, latent, feature_pred
 
 
-class gMLP_stack(nn.Module):
-    def __init__(self, seq_len: int, seq_dim: int, hidden_dim: int, n_layers: int):
-        super().__init__()
-
-        self.gmlps = nn.Sequential(
-            *[gMLP(seq_len, seq_dim, hidden_dim) for _ in range(n_layers)]
-        )
-
-    def forward(self, input: torch.Tensor) -> torch.Tensor:
-        return self.gmlps(input)
-
-class gMLP(nn.Module):
-    def __init__(self, query_len: int, seq_dim: int, hidden_dim: int):
-        super().__init__()
-
-        # inputs is batch X seq_len X seq_dim
-        self.ln0 = nn.LayerNorm(seq_dim)
-        self.ln1 = nn.LayerNorm(hidden_dim // 2)
-        self.linear0 = nn.Linear(seq_dim, hidden_dim)
-        self.linear1 = nn.Linear(query_len, query_len)
-        self.linear2 = nn.Linear(hidden_dim // 2, seq_dim)
-        self.act = nn.GELU()
-
-        torch.nn.init.ones_(self.linear1.bias)
-        torch.nn.init.xavier_normal_(self.linear1.weight, gain=0.01)
-
-
-
-    def forward(self, input: torch.Tensor) -> torch.Tensor:
-
-        x = self.ln0(input)
-        x = self.linear0(x)
-        x = self.act(x)
-        (u, v) = torch.chunk(x, 2, dim=-1)
-        v = self.ln1(v)
-        v = torch.transpose(v, 2, 1)
-        v = self.linear1(v)
-        v = torch.transpose(v, 2, 1)
-        x = self.linear2(u * v)
-        return x + input
-
-
 class ATACDecoder(nn.Module):
 
     def __init__(
@@ -324,45 +187,6 @@ class ATACDecoder(nn.Module):
 
         return atac_pred
 
-class Decoder(nn.Module):
-
-    def __init__(
-        self,
-        seq_dim: int,
-        query_dim: int,
-        dropout: float = 0.0,  # for the process attention module
-        n_out: int = 1,
-    ):
-
-        super().__init__()
-
-        self.decoder_cross_attn = CrossAttn(
-            seq_dim, query_dim
-        )  # query is now gene embedding
-
-        self.gene_mlp = nn.Sequential(
-            nn.LayerNorm(seq_dim),
-            nn.Linear(seq_dim, seq_dim),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(seq_dim, n_out),
-        )
-
-    def forward(self, latent: torch.Tensor, gene_query: torch.Tensor):
-
-        # Query genes and cell properties
-        # Decoder out will contain the latent for both genes and cell properties, concatenated together
-        decoder_out, _ = self.decoder_cross_attn(
-            gene_query,
-            latent,
-            key_padding_mask=None,
-        )
-
-        # Predict genes
-        n_genes = gene_query.size(1)
-        gene_pred = self.gene_mlp(decoder_out[:, : n_genes, :])
-
-        return gene_pred
 
 
 class ContrastiveGatedMLP(nn.Module):
@@ -497,7 +321,10 @@ class GatedMLP(nn.Module):
         n_heads: int,
         n_layers: int,
         dropout: float = 0.0,  # for the process attention module
+        embedding_strategy: Literal["binned", "continuous"] = "continuous",
         n_bins: Optional[int] = None,
+        cell_properties: Optional[Dict[str, Any]] = None,
+        RDA: bool = False,
         **kwargs,
     ):
 
@@ -506,6 +333,13 @@ class GatedMLP(nn.Module):
         self.seq_len = seq_len
         self.seq_dim = seq_dim
         self.n_bins = n_bins
+        self.embedding_strategy = embedding_strategy
+        self.RDA = RDA
+
+        assert (
+            embedding_strategy != "binned" or (embedding_strategy == "binned" and n_bins is not None),
+            "n_bins must be specified if embedding strategy is 'binned'"
+        )
         # create the gene embeddings based on whether to use rank ordering
         self._create_gene_embeddings()
 
@@ -518,6 +352,29 @@ class GatedMLP(nn.Module):
 
         self.gmlp = gMLP_stack(query_len, seq_dim, seq_dim * 2, n_layers)
         self.decoder = Decoder(seq_dim, query_dim, dropout)
+
+        self.cell_properties = cell_properties
+        if cell_properties is not None:
+            n_features = len(cell_properties)
+            print("n_features", n_features)
+
+            self.feature_decoder = nn.ModuleDict()
+            self.feature_emb = {}
+            for k, v in cell_properties.items():
+                n_out_feature = len(v["values"])
+                print("Feature dim", k, n_out_feature)
+                self.feature_emb[k] = nn.Parameter(torch.randn(1, query_dim))
+                self.feature_decoder[k] = Decoder(
+                    seq_dim,
+                    query_dim,
+                    dropout=0.5,
+                    cross_attn_dropout=0.0,
+                    n_out=n_out_feature,
+                    layernorm=True,
+                    hidden_expansion=2,
+                    hidden_layers=1,
+                )
+
 
 
     def encoder_attn_step(
@@ -534,34 +391,43 @@ class GatedMLP(nn.Module):
 
     def _create_gene_embeddings(self):
 
-        if self.n_bins is not None:
+        if self.embedding_strategy == "binned":
+            self.gene_emb = nn.Embedding(self.seq_len+ 1, self.seq_dim, padding_idx=self.seq_len)
+            self.gene_bin_emb = nn.Embedding(self.seq_len + 1, self.seq_dim, padding_idx=0)
+        elif self.embedding_strategy == "continuous":
             self.gene_emb = nn.Embedding(self.seq_len + 1, self.seq_dim, padding_idx=self.seq_len)
-            # self.gene_emb_bias = nn.Embedding(self.seq_len + 1, 1, padding_idx=self.seq_len)
-            self.gene_bin_emb = nn.Embedding(self.n_bins + 1, self.seq_dim, padding_idx=0)
-        else:
-            self.gene_emb = nn.Embedding(self.seq_len + 1, self.seq_dim, padding_idx=self.seq_len)
-            self.gene_val_w = nn.Embedding(self.seq_len + 1, 1, padding_idx=self.seq_len)
-            self.gene_val_b = nn.Embedding(self.seq_len + 1, 1, padding_idx=self.seq_len)
-            torch.nn.init.ones_(self.gene_val_w.weight)
-            torch.nn.init.zeros_(self.gene_val_b.weight)
+            self.gene_val_emb = MLPEmbedding(self.seq_dim)
 
+        if self.RDA:
+            self.depth_val_emb = MLPEmbedding(self.seq_dim) # one for input depth and the other for target depth
+            self.depth_emb = nn.Parameter(torch.randn(1, 2, self.seq_dim))
+
+        self.target_emb = nn.Embedding(self.seq_len + 1, self.seq_dim, padding_idx=self.seq_len)
 
     def _target_embedding(self, gene_ids: torch.Tensor) -> torch.Tensor:
 
-        return self.gene_emb(gene_ids)
+        # return self.gene_emb(gene_ids)
+        return self.target_emb(gene_ids)
 
     def _gene_embedding(
         self,
         gene_ids: torch.Tensor,
         gene_vals: torch.Tensor,
+        depths: torch.Tensor,
     ) -> torch.Tensor:
 
-        if self.bin_gene_count:
-            return self.gene_emb(gene_ids) + self.gene_bin_emb(gene_vals.to(torch.long))
-        else:
-            gene_emb = self.gene_emb(gene_ids)
-            vals = gene_vals.unsqueeze(2) * self.gene_val_w(gene_ids) +  self.gene_val_b(gene_ids)
-            return vals * gene_emb
+        if self.embedding_strategy == "binned":
+            output = self.gene_emb(gene_ids) + self.gene_bin_emb(gene_vals.to(torch.long))
+        elif self.embedding_strategy == "continuous":
+            output = self.gene_emb(gene_ids) + self.gene_val_emb(gene_vals)
+        elif self.embedding_strategy == "film":
+            output = self.gene_emb(gene_ids) + self.gene_scale(gene_ids) * self.gene_val_emb(gene_vals)
+
+        if self.RDA:
+            depth_emb =  self.depth_val_emb(depths) + self.depth_emb
+            output = torch.concat((output, depth_emb), dim=1)
+
+        return output
 
     def forward(
         self,
@@ -569,11 +435,12 @@ class GatedMLP(nn.Module):
         gene_target_ids: torch.Tensor,
         gene_vals: torch.Tensor,
         key_padding_mask: Optional[torch.Tensor] = None,
+        depths: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
 
         input_query = self.query_emb.repeat(len(gene_ids), 1, 1)
 
-        key_vals = self._gene_embedding(gene_ids, gene_vals)
+        key_vals = self._gene_embedding(gene_ids, gene_vals, depths)
         gene_query = self._target_embedding(gene_target_ids)
 
         # Main calculation of latent variables
@@ -584,7 +451,18 @@ class GatedMLP(nn.Module):
         latent = self.gmlp(latent)
         gene_pred = self.decoder(latent, gene_query)
 
-        return gene_pred, latent
+        if self.cell_properties is not None:
+            feature_pred = {}
+            for k in self.cell_properties.keys():
+
+                query = self.feature_emb[k].repeat(len(gene_ids), 1, 1).to(latent.device)
+                #print("A", k, latent.shape, query.shape)
+                feature_pred[k] = self.feature_decoder[k](latent, query)
+
+        else:
+            feature_pred = None
+
+        return gene_pred, latent, feature_pred
 
 
 class Exceiver_atacseq(nn.Module):
@@ -1032,7 +910,7 @@ def load_model(model_save_path, model):
     ckpt = torch.load(model_save_path)
     key = "state_dict" if "state_dict" in ckpt else "model_state_dict"
     for k, v in ckpt[key].items():
-
+        loaded = False
         if "cell_property" in k:
             non_network_params.append(k)
         elif "network" in k:
@@ -1042,8 +920,11 @@ def load_model(model_save_path, model):
             if n == k and p.size() == v.size():
                 state_dict[k] = v
                 params_loaded.append(n)
+                loaded = True
+        if not loaded:
+            print(f"{k} not loaded")
 
-    model.load_state_dict(state_dict, strict=True)
+    model.load_state_dict(state_dict, strict=False)
     print(f"Number of params loaded: {len(params_loaded)}")
     print(f"Non-network parameters not loaded: {non_network_params}")
 
