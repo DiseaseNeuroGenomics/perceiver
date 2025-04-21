@@ -149,11 +149,11 @@ class TFInference(BaseTask):
 
     def validation_step(self, batch, batch_idx):
 
-        gene_ids, gene_target_ids, gene_vals, gene_targets, key_padding_mask, _, _, _, _, cell_idx = batch
+        gene_ids, gene_target_ids, gene_vals, gene_targets, key_padding_mask, depths, _, _,  cell_idx = batch
         batch_size, n_target_genes = gene_target_ids.shape
 
         gene_pred, _, _ = self.network.forward(
-            gene_ids, gene_target_ids, gene_vals, key_padding_mask,
+            gene_ids, gene_target_ids, gene_vals, key_padding_mask, depths,
         )
 
         gene_target_ids = gene_target_ids.detach().cpu().numpy()
@@ -210,14 +210,14 @@ class AllToAllPerutbation(BaseTask):
 
     def validation_step(self, batch, batch_idx):
 
-        gene_ids, gene_target_ids, gene_vals, gene_targets, key_padding_mask, _, _, _, _, _= batch
+        gene_ids, gene_target_ids, gene_vals, gene_targets, key_padding_mask, depths, _, _, _ = batch
         batch_size = gene_ids.shape[0]
         n_iters = 10
 
         n_input_genes = gene_vals.shape[1]
 
         gene_pred, _, _ = self.network.forward(
-            gene_ids, gene_target_ids, gene_vals, key_padding_mask,
+            gene_ids, gene_target_ids, gene_vals, key_padding_mask, depths,
         )
 
         target_idx = gene_target_ids.to(torch.int16).detach().cpu().numpy()
@@ -226,12 +226,13 @@ class AllToAllPerutbation(BaseTask):
         for n in range(n_iters):
 
             # rnd_inc = torch.from_numpy(np.random.choice([1, 2, 3], size=(batch_size,), replace=True)).to(gene_vals.device)
-            rnd_inc = 1
+
             gene_vals_perturb = copy.deepcopy(gene_vals.clone().detach())
-            # print("MEAN GEN VALS", gene_vals.mean())
-            gene_vals_perturb[:, rnd_idx[n]] = torch.clip(
-                gene_vals_perturb[:, rnd_idx[n]] + rnd_inc, 0, self.n_bins-1
-            )
+            gene_vals_perturb[:, rnd_idx[n]] = gene_vals_perturb[:, rnd_idx[n]] + 1
+            # TODO: add fix when binning inputs
+            #gene_vals_perturb[:, rnd_idx[n]] = torch.clip(
+            #    gene_vals_perturb[:, rnd_idx[n]] + rnd_inc, 0, self.n_bins-1
+            #)
 
             gene_pred_perturb, _, _ = self.network.forward(
                 gene_ids, gene_target_ids, gene_vals_perturb, key_padding_mask,
@@ -240,7 +241,6 @@ class AllToAllPerutbation(BaseTask):
             source_idx = gene_ids[:, rnd_idx[n]].to(torch.int16).detach().cpu().numpy()
             delta = gene_pred_perturb.to(torch.float32).detach().cpu().numpy() - gene_pred.to(torch.float32).detach().cpu().numpy()
             delta = delta[:, :, 0]
-            #print("A", delta.std(), torch.sum(torch.abs(gene_vals_perturb - gene_vals)))
 
             for i in range(batch_size):
                 count = self.results["pos_count"][source_idx[i], target_idx[i]]
