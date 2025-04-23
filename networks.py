@@ -403,8 +403,10 @@ class GatedMLP(nn.Module):
             self.gene_val_emb = MLPEmbedding(self.seq_dim, n_input=n_input, linear=self.linear_embedding)
 
         if self.RDA:
-            self.depth_val_emb = MLPEmbedding(self.seq_dim, linear=self.linear_embedding)
-            self.depth_emb = nn.Parameter(torch.randn(1, 2, self.seq_dim))
+            self.target_depth_val_emb = MLPEmbedding(self.seq_dim, linear=self.linear_embedding)
+            self.input_depth_val_emb = MLPEmbedding(self.seq_dim, linear=self.linear_embedding)
+            self.target_depth_emb = nn.Parameter(torch.randn(1, 1, self.seq_dim))
+            self.input_depth_emb = nn.Parameter(torch.randn(1, 1, self.seq_dim))
 
         self.target_emb = nn.Embedding(self.seq_len + 1, self.seq_dim, padding_idx=self.seq_len)
 
@@ -429,8 +431,9 @@ class GatedMLP(nn.Module):
             output = self.gene_emb(gene_ids) + self.gene_scale(gene_ids) * self.gene_val_emb(gene_vals)
 
         if self.RDA:
-            depth_emb =  self.depth_val_emb(depths) + self.depth_emb
-            output = torch.concat((output, depth_emb), dim=1)
+            target_depth_emb = self.target_depth_val_emb(depths[:, 0:1]) + self.target_depth_emb
+            input_depth_emb = self.input_depth_val_emb(depths[:, 1:2]) + self.input_depth_emb
+            output = torch.concat((output, target_depth_emb, input_depth_emb), dim=1)
 
         return output
 
