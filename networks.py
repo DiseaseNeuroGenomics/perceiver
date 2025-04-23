@@ -321,7 +321,8 @@ class GatedMLP(nn.Module):
         n_heads: int,
         n_layers: int,
         dropout: float = 0.0,  # for the process attention module
-        embedding_strategy: Literal["binned", "continuous"] = "continuous",
+        embedding_strategy: Literal["binned", "continuous", "continuous"] = "continuous",
+        linear_embedding: bool = False,
         n_bins: Optional[int] = None,
         cell_properties: Optional[Dict[str, Any]] = None,
         RDA: bool = False,
@@ -334,6 +335,7 @@ class GatedMLP(nn.Module):
         self.seq_dim = seq_dim
         self.n_bins = n_bins
         self.embedding_strategy = embedding_strategy
+        self.linear_embedding = linear_embedding
         self.RDA = RDA
 
         assert (
@@ -395,11 +397,13 @@ class GatedMLP(nn.Module):
             self.gene_emb = nn.Embedding(self.seq_len+ 1, self.seq_dim, padding_idx=self.seq_len)
             self.gene_bin_emb = nn.Embedding(self.seq_len + 1, self.seq_dim, padding_idx=0)
         elif self.embedding_strategy == "continuous":
+            n_input = 16
             self.gene_emb = nn.Embedding(self.seq_len + 1, self.seq_dim, padding_idx=self.seq_len)
-            self.gene_val_emb = MLPEmbedding(self.seq_dim)
+            self.gene_val_emb_input = nn.Embedding(self.seq_len + 1, n_input, padding_idx=self.seq_len)
+            self.gene_val_emb = MLPEmbedding(self.seq_dim, n_input=n_input, linear=self.linear_embedding)
 
         if self.RDA:
-            self.depth_val_emb = MLPEmbedding(self.seq_dim) # one for input depth and the other for target depth
+            self.depth_val_emb = MLPEmbedding(self.seq_dim, linear=self.linear_embedding)
             self.depth_emb = nn.Parameter(torch.randn(1, 2, self.seq_dim))
 
         self.target_emb = nn.Embedding(self.seq_len + 1, self.seq_dim, padding_idx=self.seq_len)
@@ -419,7 +423,8 @@ class GatedMLP(nn.Module):
         if self.embedding_strategy == "binned":
             output = self.gene_emb(gene_ids) + self.gene_bin_emb(gene_vals.to(torch.long))
         elif self.embedding_strategy == "continuous":
-            output = self.gene_emb(gene_ids) + self.gene_val_emb(gene_vals)
+            gene_input = self.gene_val_emb_input(gene_ids)
+            output = self.gene_emb(gene_ids) + self.gene_val_emb(gene_vals.unsqueeze(-1) * gene_input)
         elif self.embedding_strategy == "film":
             output = self.gene_emb(gene_ids) + self.gene_scale(gene_ids) * self.gene_val_emb(gene_vals)
 

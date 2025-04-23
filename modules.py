@@ -23,18 +23,24 @@ class MLP(nn.Module):
 
 class MLPEmbedding(nn.Module):
 
-    def __init__(self, embedding_dim: int):
+    def __init__(self, embedding_dim: int, n_input: int = 1, linear: bool = False):
         super().__init__()
         print("Creating gene value embedding")
 
-        self.mlp = nn.Sequential(
-            nn.Linear(1, 16),
-            nn.ReLU(),
-            nn.Linear(16, embedding_dim),
-        )
+        self.n_input = n_input
+        if linear:
+            self.mlp = nn.Linear(n_input, embedding_dim)
+        else:
+            self.mlp = nn.Sequential(
+                nn.Linear(n_input, 16),
+                nn.ReLU(),
+                nn.Linear(16, embedding_dim),
+            )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.mlp(x.unsqueeze(-1))
+
+        x = x.unsqueeze(-1) if self.n_input == 1 else x
+        return self.mlp(x)
 
 
 class CrossAttn(nn.Module):

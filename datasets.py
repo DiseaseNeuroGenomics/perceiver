@@ -27,7 +27,7 @@ class SingleCellDataset(Dataset):
         n_mask: int = 100,
         n_input: int = 100,
         batch_size: int = 32,
-        normalize_total: Optional[float] = None,
+        normalize_total: bool = True,
         log_normalize: bool = True,
         cell_prop_same_ids: bool = False,
         max_cell_prop_val: float = 999,
@@ -223,7 +223,7 @@ class SingleCellDataset(Dataset):
 
         target_gene_vals = np.zeros((self.batch_size, self.n_genes), dtype=np.float32)
         input_gene_vals = np.zeros_like(target_gene_vals)
-        include_gene_mask = np.zeros((self.batch_size, self.n_genes), dtype=np.int8)
+        include_gene_mask = np.ones((self.batch_size, self.n_genes), dtype=np.int8)
         depths = np.zeros((self.batch_size, 2), dtype=np.float32)
 
 
@@ -234,28 +234,38 @@ class SingleCellDataset(Dataset):
                 self.data_path, dtype='uint8', mode='r', shape=(self.n_genes_original,), offset=j * self.offset
             )[self.gene_idx].astype(np.float32)
 
-            idx = raw_gene_vals < self.exclude_gene_val
-            include_gene_mask[n, idx] = 1
-            raw_gene_vals[raw_gene_vals >= self.exclude_gene_val] = 0
+            idx = raw_gene_vals >= self.exclude_gene_val
+            include_gene_mask[n, idx] = 0
+            raw_gene_vals[idx] = 0
+
+            target_gene_vals[n, :] = self._normalize_total(raw_gene_vals)
+            target_gene_vals[n, :] = self._log_normalize(raw_gene_vals)
 
             if self.RDA:
-                processed_gene_vals, depths[n, 0], depths[n, 1] = self._randomly_sample_depth(raw_gene_vals)
+                raw_gene_vals, depths[n, 0], depths[n, 1] = self._randomly_sample_depth(raw_gene_vals)
             else:
-                processed_gene_vals = copy.deepcopy(raw_gene_vals)
                 depths = None
 
-            target_gene_vals[n, :] = self._normalize(raw_gene_vals)
-
             if self.embedding_strategy == "binned":
-                input_gene_vals[n, :] = np.digitize(processed_gene_vals, self.bins)
+                input_gene_vals[n, :] = np.digitize(raw_gene_vals, self.bins)
             else:
-                input_gene_vals[n, :] = self._normalize(processed_gene_vals)
+                norm_gene_val = self._normalize_total(raw_gene_vals)
+                norm_gene_val = self._log_normalize(norm_gene_val)
+                input_gene_vals[n, :] = norm_gene_val
 
         if depths is not None:
-            depths = self._normalize(depths)
+            depths = self._log_normalize(depths)
 
         # return two copies since we'll modify gene_vals but keep gene_targets as is
         return input_gene_vals, target_gene_vals, include_gene_mask, depths
+
+
+    def _normalize_total(self, x: np.ndarray, target_sum: float = 10_000) -> np.ndarray:
+        return x * target_sum / np.sum(x) if self.normalize_total else x
+
+
+    def _log_normalize(self, x: np.ndarray) -> np.ndarray:
+        return np.log1p(x) if self.log_normalize else x
 
 
     def _randomly_sample_depth(self, gene_vals):
@@ -268,16 +278,15 @@ class SingleCellDataset(Dataset):
             beta = np.random.beta(2, 2)
             idx = np.nonzero(gene_vals)
             for i in idx:
-                new_gene_vals[i] = np.random.binomial(gene_vals[i].astype(np.int64), beta)
+                new_gene_vals[i] = np.clip(
+                    np.random.binomial(gene_vals[i].astype(np.int64), beta), 0, self.exclude_gene_val - 1,
+                ).astype(np.float32)
 
-        new_depth = np.sum(new_gene_vals[new_gene_vals < self.exclude_gene_val])
+        new_depth = np.sum(new_gene_vals)
 
         return new_gene_vals, depth, new_depth
 
-    def _normalize(self, x: np.ndarray) -> np.ndarray:
 
-        x = np.log1p(x) if self.log_normalize else x
-        return x
 
     def _prepare_data(self, batch_idx):
 
@@ -323,7 +332,6 @@ class SingleCellDataset(Dataset):
 
         n_input = n_genes_batch if not self.RDA else n_genes_batch + 2
         padding_mask = np.zeros((self.batch_size, n_input), dtype=np.float32)
-
 
         for n in range(self.batch_size):
 
