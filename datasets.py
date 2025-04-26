@@ -39,6 +39,7 @@ class SingleCellDataset(Dataset):
         n_genes_per_input: int = 400,
         cell_restrictions: Optional[Dict[str, Any]] = None,
         RDA: bool = False, # read-depth-aware, from scFoundation
+        decode_from_non_masked_genes: bool = True,
         exclude_gene_val: int = 255,
         training: bool = True,
     ):
@@ -75,6 +76,7 @@ class SingleCellDataset(Dataset):
         self.remove_sex_chrom = remove_sex_chrom
         self.n_genes_per_input = n_genes_per_input
         self.RDA = RDA
+        self.decode_from_non_masked_genes = decode_from_non_masked_genes
         self.exclude_gene_val = exclude_gene_val
         self.training = training
 
@@ -352,7 +354,10 @@ class SingleCellDataset(Dataset):
             gene_ids[n, :] = input_idx
             gene_vals[n, :] = pre_input_gene_vals[n, input_idx]
 
-            remainder_idx = list(set(possible_input_genes) - set(input_idx))
+            if self.decode_from_non_masked_genes:
+                remainder_idx = possible_input_genes
+            else:
+                remainder_idx = list(set(possible_input_genes) - set(input_idx))
             replace = False if self.n_mask <= len(remainder_idx) else True
             mask_idx = np.random.choice(remainder_idx, self.n_mask, replace=replace)
 
