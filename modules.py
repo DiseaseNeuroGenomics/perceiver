@@ -23,7 +23,13 @@ class MLP(nn.Module):
 
 class MLPEmbedding(nn.Module):
 
-    def __init__(self, embedding_dim: int, n_input: int = 1, linear: bool = False):
+    def __init__(
+        self,
+        embedding_dim: int,
+        n_input: int = 1,
+        linear: bool = False,
+        n_hidden: int = 32,
+    ):
         super().__init__()
         print("Creating gene value embedding")
 
@@ -32,9 +38,9 @@ class MLPEmbedding(nn.Module):
             self.mlp = nn.Linear(n_input, embedding_dim)
         else:
             self.mlp = nn.Sequential(
-                nn.Linear(n_input, 16),
-                nn.ReLU(),
-                nn.Linear(16, embedding_dim),
+                nn.Linear(n_input, n_hidden),
+                nn.LeakyReLU(negative_slope=0.1),
+                nn.Linear(n_hidden, embedding_dim),
             )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

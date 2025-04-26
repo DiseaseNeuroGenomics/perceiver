@@ -27,8 +27,9 @@ class SingleCellDataset(Dataset):
         n_mask: int = 100,
         n_input: int = 100,
         batch_size: int = 32,
-        normalize_total: bool = True,
+        normalize_total: bool = False,
         log_normalize: bool = True,
+        random_scaling: bool = True,
         cell_prop_same_ids: bool = False,
         max_cell_prop_val: float = 999,
         protein_coding_only: bool = False,
@@ -65,6 +66,7 @@ class SingleCellDataset(Dataset):
 
         self.normalize_total = normalize_total
         self.log_normalize = log_normalize
+        self.random_scaling = random_scaling
         self.embedding_strategy = embedding_strategy
         self.n_bins = n_bins
         self.cell_prop_same_ids = cell_prop_same_ids
@@ -238,20 +240,17 @@ class SingleCellDataset(Dataset):
             include_gene_mask[n, idx] = 0
             raw_gene_vals[idx] = 0
 
-            target_gene_vals[n, :] = self._normalize_total(raw_gene_vals)
-            target_gene_vals[n, :] = self._log_normalize(raw_gene_vals)
+            target_gene_vals[n, :] = self._normalize(raw_gene_vals)
 
             if self.RDA:
-                raw_gene_vals, depths[n, 0], depths[n, 1] = self._randomly_sample_depth(raw_gene_vals)
+                raw_gene_vals, depths[n, :] = self._randomly_sample_depth(raw_gene_vals)
             else:
-                depths = None
+                depths[n, :] = np.sum(raw_gene_vals)
 
             if self.embedding_strategy == "binned":
                 input_gene_vals[n, :] = np.digitize(raw_gene_vals, self.bins)
             else:
-                norm_gene_val = self._normalize_total(raw_gene_vals)
-                norm_gene_val = self._log_normalize(norm_gene_val)
-                input_gene_vals[n, :] = norm_gene_val
+                input_gene_vals[n, :] = self._normalize(raw_gene_vals)
 
         if depths is not None:
             depths = self._log_normalize(depths)
@@ -259,10 +258,22 @@ class SingleCellDataset(Dataset):
         # return two copies since we'll modify gene_vals but keep gene_targets as is
         return input_gene_vals, target_gene_vals, include_gene_mask, depths
 
+    def _random_scaling(self, gene_vals: np.ndarray) -> np.ndarray:
+
+        if self.random_scaling and self.training:
+            alpha = 0.8 + 0.4 * np.random.rand()
+            return alpha * gene_vals
+        else:
+            return gene_vals
+
+    def _normalize(self, gene_vals: np.ndarray):
+
+        x = self._normalize_total(gene_vals)
+        x = self._log_normalize(x)
+        return x
 
     def _normalize_total(self, x: np.ndarray, target_sum: float = 10_000) -> np.ndarray:
-        return x * target_sum / np.sum(x) if self.normalize_total else x
-
+        return x * target_sum / (1 + np.sum(x)) if self.normalize_total else x
 
     def _log_normalize(self, x: np.ndarray) -> np.ndarray:
         return np.log1p(x) if self.log_normalize else x
@@ -270,21 +281,21 @@ class SingleCellDataset(Dataset):
 
     def _randomly_sample_depth(self, gene_vals):
 
-        depth = np.sum(gene_vals)
-        gamma = 0.0 if (depth < 1000 or not self.training) else 0.5
+        depths = np.zeros(2, np.float32)
+        depths[0] = np.sum(gene_vals)
+        gamma = 0.5 if (depths[0] >= 1000 and self.training) else 0.0
         new_gene_vals = copy.deepcopy(gene_vals)
 
         if np.random.rand() < gamma:
-            beta = np.random.beta(2, 2)
-            idx = np.nonzero(gene_vals)
-            for i in idx:
-                new_gene_vals[i] = np.clip(
-                    np.random.binomial(gene_vals[i].astype(np.int64), beta), 0, self.exclude_gene_val - 1,
-                ).astype(np.float32)
+            beta = np.clip(np.random.beta(2, 2), 0.1, 1.0)
+            idx = np.nonzero(gene_vals)[0]
+            new_gene_vals[idx] = np.clip(
+                np.random.binomial(gene_vals[idx].astype(np.int64), beta), 0, self.exclude_gene_val - 1,
+            ).astype(np.float32)
 
-        new_depth = np.sum(new_gene_vals)
+        depths[1] = np.sum(new_gene_vals)
 
-        return new_gene_vals, depth, new_depth
+        return new_gene_vals, depths
 
 
 
@@ -330,8 +341,8 @@ class SingleCellDataset(Dataset):
         gene_target_ids = np.zeros((self.batch_size, self.n_mask), dtype=np.int64)
         gene_target_vals = np.zeros((self.batch_size, self.n_mask), dtype=np.float32)
 
-        n_input = n_genes_batch if not self.RDA else n_genes_batch + 2
-        padding_mask = np.zeros((self.batch_size, n_input), dtype=np.float32)
+        #n_input = n_genes_batch if not self.RDA else n_genes_batch # + 2  TODO: FIX THIS
+        padding_mask = np.zeros((self.batch_size, n_genes_batch), dtype=np.float32)
 
         for n in range(self.batch_size):
 

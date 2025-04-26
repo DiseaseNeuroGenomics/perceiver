@@ -403,6 +403,7 @@ class GatedMLP(nn.Module):
             self.gene_val_emb = MLPEmbedding(self.seq_dim, n_input=n_input, linear=self.linear_embedding)
 
         if self.RDA:
+            print("RDA based embedding")
             self.target_depth_val_emb = MLPEmbedding(self.seq_dim, linear=self.linear_embedding)
             self.input_depth_val_emb = MLPEmbedding(self.seq_dim, linear=self.linear_embedding)
             self.target_depth_emb = nn.Parameter(torch.randn(1, 1, self.seq_dim))
@@ -446,6 +447,7 @@ class GatedMLP(nn.Module):
         depths: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
 
+        key_padding_mask = None
         input_query = self.query_emb.repeat(len(gene_ids), 1, 1)
 
         key_vals = self._gene_embedding(gene_ids, gene_vals, depths)
@@ -917,6 +919,7 @@ def load_model(model_save_path, model):
     state_dict = {}
     ckpt = torch.load(model_save_path)
     key = "state_dict" if "state_dict" in ckpt else "model_state_dict"
+
     for k, v in ckpt[key].items():
         loaded = False
         if "cell_property" in k:
@@ -925,6 +928,7 @@ def load_model(model_save_path, model):
             k = k.split(".")
             k = ".".join(k[1:])
         for n, p in model.named_parameters():
+
             if n == k and p.size() == v.size():
                 state_dict[k] = v
                 params_loaded.append(n)
