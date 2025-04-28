@@ -13,7 +13,7 @@ from torchmetrics import MetricCollection, ExplainedVariance, MeanSquaredError
 from torchmetrics.classification import Accuracy, BinaryAccuracy
 import torch.nn.functional as F
 from torch.distributions.normal import Normal
-from losses import FocalLoss
+from losses import ZINB
 
 
 
@@ -406,7 +406,6 @@ class AllToAllPerutbation(BaseTask):
                 gene_ids, gene_target_ids, gene_vals_perturb, key_padding_mask, depths,
             )
 
-
             source_idx = gene_ids[:, rnd_idx[n]].to(torch.int16).detach().cpu().numpy()
             delta = gene_pred_perturb.to(torch.float32).detach().cpu().numpy() - gene_pred.to(torch.float32).detach().cpu().numpy()
             delta = delta[:, :, 0]
@@ -477,7 +476,10 @@ class MSELoss(BaseTask):
         super().__init__(network, task_cfg)
 
         # Functions and metrics
-        self.mse = nn.MSELoss()
+        if self.task_cfg["loss"] == "MSE":
+            self.mse = nn.MSELoss()
+        else:
+            self.zinb = ZINB()
         self.val_mse = MeanSquaredError()
         self.explained_var = ExplainedVariance()
 
@@ -501,7 +503,17 @@ class MSELoss(BaseTask):
             gene_ids, gene_target_ids, gene_vals, key_padding_mask, depths,
         )
 
-        gene_loss = self.mse(gene_pred, gene_targets.unsqueeze(2))
+        if self.task_cfg["loss"] == "MSE":
+            gene_loss = self.mse(gene_pred, gene_targets.unsqueeze(2))
+        elif self.task_cfg["loss"] == "ZINB":
+            gene_loss = self.zinb(
+                gene_targets,
+                torch.exp(gene_pred[..., 0]),
+                torch.exp(gene_pred[..., 1]),
+                gene_pred[..., 2],
+            )
+        else:
+            print("XXXXX")
 
         self.log("gene_loss", gene_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
 
@@ -521,8 +533,16 @@ class MSELoss(BaseTask):
             self.results["gene_targets"].append(gene_targets.detach().cpu().numpy())
             self.results["gene_pred"].append(gene_pred.to(torch.float32).detach().cpu().numpy())
 
-        self.explained_var(gene_pred, gene_targets.unsqueeze(2))
-        self.val_mse(gene_pred, gene_targets.unsqueeze(2))
+        if self.task_cfg["loss"] == "MSE":
+            self.explained_var(gene_pred, gene_targets.unsqueeze(2))
+            self.val_mse(gene_pred, gene_targets.unsqueeze(2))
+        elif self.task_cfg["loss"] == "ZINB":
+
+            softplus_pi = F.softplus(-gene_pred[..., 2])  # log(1 + exp(-pi)) for stability
+            # pi_prob = (1 - torch.sigmoid(gene_pred[..., 2]))
+            y = torch.exp(gene_pred[..., 0]) * softplus_pi
+            self.explained_var(y, gene_targets)
+            self.val_mse(y, gene_targets)
 
         self.log("exp_var", self.explained_var, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         self.log("mse", self.val_mse, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
@@ -555,7 +575,7 @@ class Annotation(pl.LightningModule):
 
         for n, p in self.network.named_parameters():
 
-            #if not ("feature" in n or "decoder" in n or "31" in n or "30" in n or "29" in n or "28" in n): # and not cond:
+            #if not ("feature" in n or "decoder" in n or "31" in n or "30" in n or "29" in n or "28" in n or "27" in n or "26" in n): # and not cond:
             if not "feature" in n:
                 p.requires_grad_(False)
 
@@ -696,7 +716,7 @@ class Annotation(pl.LightningModule):
 
         # depths[:, 0] = depths[:, 0] * self.scale_target_depth
         d = torch.exp(depths[:, 0])
-        depths[:, 0] = torch.log(d * 3)
+        depths[:, 0] = torch.log( d * 1)
 
         gene_pred, _, feature_pred = self.network.forward(
             gene_ids, gene_target_ids, gene_vals, key_padding_mask, depths,
@@ -708,10 +728,10 @@ class Annotation(pl.LightningModule):
         #gene_loss = self.mse(gene_pred, gene_targets.unsqueeze(2))
         gene_loss = 0.0
 
-        #self.log("gene_loss", gene_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("gene_loss", gene_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
         self.log("feature_loss", feature_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
 
-        return feature_loss
+        return feature_loss + 500 * gene_loss
 
 
     def validation_step(self, batch, batch_idx):
@@ -721,12 +741,17 @@ class Annotation(pl.LightningModule):
             depths, cell_prop_vals, cell_prop_mask, _
         ) = batch
 
-        d = torch.exp(depths[:, 0])
-        depths[:, 0] = torch.log(d * 3)
-
         gene_pred, _, feature_pred = self.network.forward(
             gene_ids, gene_target_ids, gene_vals, key_padding_mask, depths
         )
+
+        d = torch.exp(depths[:, 0])
+        depths[:, 0] = torch.log(d * 1)
+
+        gene_pred1, _, feature_pred = self.network.forward(
+            gene_ids, gene_target_ids, gene_vals, key_padding_mask, depths
+        )
+
         #print("VAL", gene_pred.mean())
 
         self._feature_scores(feature_pred, cell_prop_vals, cell_prop_mask)

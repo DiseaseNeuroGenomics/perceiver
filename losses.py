@@ -40,3 +40,54 @@ class FocalLoss(nn.Module):
         prob = torch.exp(log_prob)
         loss = - new_target * log_prob * (1 - prob) ** self.gamma
         return self.alpha * loss.sum(dim=-1)
+
+
+class ZINB(nn.Module):
+    """
+    Zero-Inflated Negative Binomial (ZINB) loss.
+
+    Args:
+        x: observed gene expression (batch_size, n_genes)
+        mu: predicted mean (batch_size, n_genes)
+        theta: predicted dispersion (batch_size, n_genes)
+        pi: predicted zero-inflation logits (batch_size, n_genes)  (logits! before sigmoid)
+        eps: small number for numerical stability
+        reduction: 'mean' or 'sum'
+
+    Returns:
+        Loss value
+    """
+    def __init__(self, eps=1e-8, reduction='mean'):
+        super().__init__()
+        self.eps = eps
+        self.reduction = reduction
+
+    def forward(self, x, mu, theta, pi):
+
+        """
+        log_mu, log_theta, pi_logits = model(input)
+        mu = torch.exp(log_mu)
+        theta = torch.exp(log_theta)
+
+        loss = zinb_loss(x_true, mu, theta, pi_logits)
+        loss.backward()
+        """
+        softplus_pi = F.softplus(-pi)  # log(1 + exp(-pi)) for stability
+        pi_prob = torch.sigmoid(pi)
+
+        t1 = torch.lgamma(theta + self.eps) + torch.lgamma(x + 1.0) - torch.lgamma(x + theta + self.eps)
+        t2 = (theta + self.eps) * torch.log(theta + self.eps) + (x + self.eps) * torch.log(mu + self.eps)
+        t3 = (theta + x + self.eps) * torch.log(theta + mu + self.eps)
+        nb_case = t1 + t2 - t3  # log NB likelihood
+
+        zero_case = -softplus_pi + torch.log(pi_prob + (1.0 - pi_prob) * torch.exp(nb_case))
+
+        nb_case = -softplus_pi - pi_prob + (1.0 - pi_prob) * torch.exp(nb_case)
+        result = torch.where(x < 1e-8, zero_case, nb_case)
+
+        if self.reduction == 'mean':
+            return -result.mean()
+        elif self.reduction == 'sum':
+            return -result.sum()
+        else:
+            return -result

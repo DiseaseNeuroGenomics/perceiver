@@ -326,6 +326,8 @@ class GatedMLP(nn.Module):
         n_bins: Optional[int] = None,
         cell_properties: Optional[Dict[str, Any]] = None,
         RDA: bool = False,
+        second_layer_RDA: bool = False,
+        loss: Literal["MSE", "ZINB"] = "MSE",
         **kwargs,
     ):
 
@@ -337,6 +339,7 @@ class GatedMLP(nn.Module):
         self.embedding_strategy = embedding_strategy
         self.linear_embedding = linear_embedding
         self.RDA = RDA
+        self.second_layer_RDA = second_layer_RDA
 
         assert (
             embedding_strategy != "binned" or (embedding_strategy == "binned" and n_bins is not None),
@@ -346,14 +349,19 @@ class GatedMLP(nn.Module):
         self._create_gene_embeddings()
 
         # self.output_emb = nn.Embedding(seq_len + 1, seq_dim, padding_idx=seq_len)
-        self.query_emb = nn.Parameter(torch.randn(query_len, query_dim))
+
+        self.query_emb = nn.Parameter(torch.randn(
+            query_len - 2 if self.second_layer_RDA else query_len,
+            query_dim,
+        ))
 
         self.encoder_cross_attn = CrossAttn(
             query_dim, seq_dim, num_heads=n_heads,
         )
 
         self.gmlp = gMLP_stack(query_len, seq_dim, seq_dim * 2, n_layers)
-        self.decoder = Decoder(seq_dim, query_dim, dropout)
+        print("LOOOOOOS", loss)
+        self.decoder = Decoder(seq_dim, query_dim, dropout, n_out=3 if loss == "ZINB" else 1)
 
         self.cell_properties = cell_properties
         if cell_properties is not None:
@@ -434,9 +442,14 @@ class GatedMLP(nn.Module):
         if self.RDA:
             target_depth_emb = self.target_depth_val_emb(depths[:, 0:1]) + self.target_depth_emb
             input_depth_emb = self.input_depth_val_emb(depths[:, 1:2]) + self.input_depth_emb
-            output = torch.concat((output, target_depth_emb, input_depth_emb), dim=1)
+            if not self.second_layer_RDA:
+                output = torch.concat((output, target_depth_emb, input_depth_emb), dim=1)
+                deptch_vetors = None
+            else:
+                deptch_vetors = torch.concat((target_depth_emb, input_depth_emb), dim=1)
 
-        return output
+
+        return output, deptch_vetors
 
     def forward(
         self,
@@ -450,13 +463,16 @@ class GatedMLP(nn.Module):
         key_padding_mask = None
         input_query = self.query_emb.repeat(len(gene_ids), 1, 1)
 
-        key_vals = self._gene_embedding(gene_ids, gene_vals, depths)
+        key_vals, deptch_vetors = self._gene_embedding(gene_ids, gene_vals, depths)
         gene_query = self._target_embedding(gene_target_ids)
 
         # Main calculation of latent variables
         latent, encoder_weights = self.encoder_attn_step(
             key_vals, input_query, key_padding_mask
         )
+
+        if self.second_layer_RDA:
+            latent = torch.concat((latent, deptch_vetors), dim=1)
 
         latent = self.gmlp(latent)
         gene_pred = self.decoder(latent, gene_query)
@@ -598,8 +614,6 @@ class Exceiver_atacseq(nn.Module):
 
         self.W = nn.Parameter(torch.ones(self.seq_len, n))
         self.b = nn.Parameter(torch.zeros(self.seq_len, 1))
-
-
 
 
     def _target_embedding(self, gene_ids: torch.Tensor) -> torch.Tensor:
@@ -908,8 +922,6 @@ class PosEmbedding(nn.Module):
         y =  0.5 * self.emb(pos1) + self.emb(pos2) + 0.5 * self.emb(pos3)
 
         return y
-
-
 
 
 def load_model(model_save_path, model):
