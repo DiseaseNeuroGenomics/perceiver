@@ -24,7 +24,7 @@ class SingleCellDataset(Dataset):
         metadata_path: str,
         cell_idx: Optional[List[int]] = None,
         cell_properties: Optional[Dict[str, Any]] = None,
-        n_mask: int = 100,
+        n_targets: Optional[int] = None,
         n_input: int = 100,
         batch_size: int = 32,
         normalize_total: bool = False,
@@ -61,7 +61,7 @@ class SingleCellDataset(Dataset):
         else:
             self.n_genes_original = len(self.metadata["var"])
         self.n_cell_properties = len(cell_properties) if cell_properties is not None else 0
-        self.n_mask = n_mask
+        self.n_targets = n_targets
         self.n_input = n_input
         self.batch_size = batch_size
 
@@ -338,13 +338,17 @@ class SingleCellDataset(Dataset):
 
         # select which genes to use as input, and which to mask
         # initialize gene ids ids at padding value
+
+        non_masked_genes = np.sort(np.where(np.sum(include_gene_mask, axis=0) > 0)[0])
+        n_targets = len(non_masked_genes) if self.n_targets is None else self.n_targets
+
         gene_ids = self.n_genes * np.ones((self.batch_size, n_genes_batch), dtype=np.int64)
         gene_vals = np.zeros((self.batch_size, n_genes_batch), dtype=np.float32)
-        gene_target_ids = np.zeros((self.batch_size, self.n_mask), dtype=np.int64)
-        gene_target_vals = np.zeros((self.batch_size, self.n_mask), dtype=np.float32)
+        gene_target_ids = np.zeros((self.batch_size, n_targets), dtype=np.int64)
+        gene_target_vals = np.zeros((self.batch_size, n_targets), dtype=np.float32)
 
         #n_input = n_genes_batch if not self.RDA else n_genes_batch # + 2  TODO: FIX THIS
-        padding_mask = np.zeros((self.batch_size, n_genes_batch), dtype=np.float32)
+        #padding_mask = np.zeros((self.batch_size, n_genes_batch), dtype=np.float32)
 
         for n in range(self.batch_size):
 
@@ -358,18 +362,22 @@ class SingleCellDataset(Dataset):
                 remainder_idx = possible_input_genes
             else:
                 remainder_idx = list(set(possible_input_genes) - set(input_idx))
-            replace = False if self.n_mask <= len(remainder_idx) else True
-            mask_idx = np.random.choice(remainder_idx, self.n_mask, replace=replace)
 
-            gene_target_vals[n, :] = pre_target_gene_vals[n, mask_idx]
-            gene_target_ids[n, :] = mask_idx
+            if self.n_targets is None:
+                target_idx = non_masked_genes
+            else:
+                replace = False if n_targets <= len(remainder_idx) else True
+                target_idx = np.random.choice(remainder_idx, n_targets, replace=replace)
+
+            gene_target_vals[n, :] = pre_target_gene_vals[n, target_idx]
+            gene_target_ids[n, :] = target_idx
 
         batch = (
             gene_ids,
             gene_target_ids,
             gene_vals,
             gene_target_vals,
-            padding_mask,
+            #padding_mask,
             depths,
             cell_prop_vals,
             cell_prop_mask,
@@ -396,7 +404,7 @@ class DataModule(pl.LightningDataModule):
         test_idx: List[int],
         batch_size: int = 32,
         num_workers: int = 16,
-        n_mask: int = 100,
+        n_targets: Optional[int] = 100,
         n_input: int = 100,
         cell_properties: Optional[Dict[str, Any]] = None,
         cell_prop_same_ids: bool = False,
@@ -414,7 +422,7 @@ class DataModule(pl.LightningDataModule):
         self.test_idx = test_idx
         self.batch_size = batch_size
         self.num_workers = num_workers
-        self.n_mask = n_mask
+        self.n_targets = n_targets
         self.n_input = n_input
         self.cell_properties = cell_properties
         self.cell_prop_same_ids = cell_prop_same_ids
@@ -490,7 +498,7 @@ class DataModule(pl.LightningDataModule):
             self.metadata_path,
             self.train_idx,
             cell_properties=self.cell_properties,
-            n_mask=self.n_mask,
+            n_targets=self.n_targets,
             n_input=self.n_input,
             batch_size=self.batch_size,
             cell_prop_same_ids=self.cell_prop_same_ids,
@@ -508,7 +516,7 @@ class DataModule(pl.LightningDataModule):
             self.metadata_path,
             self.test_idx,
             cell_properties=self.cell_properties,
-            n_mask=self.n_mask,
+            n_targets=self.n_targets,
             n_input=self.n_input,
             batch_size=self.batch_size,
             cell_prop_same_ids=self.cell_prop_same_ids,
