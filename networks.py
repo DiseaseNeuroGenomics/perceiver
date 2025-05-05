@@ -328,6 +328,7 @@ class GatedMLP(nn.Module):
         RDA: bool = False,
         second_layer_RDA: bool = False,
         loss: Literal["MSE", "ZINB"] = "MSE",
+        output_pi: bool = False, # only needed in loss == ZINB
         **kwargs,
     ):
 
@@ -340,6 +341,8 @@ class GatedMLP(nn.Module):
         self.linear_embedding = linear_embedding
         self.RDA = RDA
         self.second_layer_RDA = second_layer_RDA
+        self.loss = loss
+        self.output_pi = output_pi
 
         assert (
             embedding_strategy != "binned" or (embedding_strategy == "binned" and n_bins is not None),
@@ -360,8 +363,23 @@ class GatedMLP(nn.Module):
         )
 
         self.gmlp = gMLP_stack(query_len, seq_dim, seq_dim * 2, n_layers)
-        print("LOOOOOOS", loss)
-        self.decoder = Decoder(seq_dim, query_dim, dropout, n_out=3 if loss == "ZINB" else 1)
+
+        if loss == "ZINB" and not self.output_pi:
+            self.decoder_theta_pi = Decoder(seq_dim, query_dim, dropout=0.0, hidden_layers=2, n_out=2)
+
+        if loss == "ZINB" and self.output_pi:
+            n_out = 3
+        elif loss == "ZINB" and not self.output_pi:
+            n_out = 2
+        else:
+            n_out = 1
+        self.decoder = Decoder(
+            seq_dim,
+            query_dim,
+            dropout=0.0,
+            hidden_layers=2,
+            n_out=n_out,
+        )
 
         self.cell_properties = cell_properties
         if cell_properties is not None:
@@ -402,7 +420,7 @@ class GatedMLP(nn.Module):
     def _create_gene_embeddings(self):
 
         if self.embedding_strategy == "binned":
-            self.gene_emb = nn.Embedding(self.seq_len+ 1, self.seq_dim, padding_idx=self.seq_len)
+            self.gene_emb = nn.Embedding(self.seq_len + 1, self.seq_dim, padding_idx=self.seq_len)
             self.gene_bin_emb = nn.Embedding(self.seq_len + 1, self.seq_dim, padding_idx=0)
         elif self.embedding_strategy == "continuous":
             n_input = 16
@@ -417,6 +435,14 @@ class GatedMLP(nn.Module):
             self.target_depth_emb = nn.Parameter(torch.randn(1, 1, self.seq_dim))
             self.input_depth_emb = nn.Parameter(torch.randn(1, 1, self.seq_dim))
 
+        if self.loss == "ZINB":
+            self.theta = nn.Embedding(self.seq_len + 1, 1, padding_idx=self.seq_len)  # dispersion
+            self.theta.weight.data.fill_(0.0)
+            if not self.output_pi:
+                self.pi = nn.Embedding(self.seq_len + 1, 1, padding_idx=self.seq_len)  # dropout
+                self.pi.weight.data.fill_(0.0)
+                self.theta_pi_cell_emb = nn.Parameter(torch.randn(1, 1, self.seq_dim))
+
         self.target_emb = nn.Embedding(self.seq_len + 1, self.seq_dim, padding_idx=self.seq_len)
 
     def _target_embedding(self, gene_ids: torch.Tensor) -> torch.Tensor:
@@ -425,10 +451,10 @@ class GatedMLP(nn.Module):
         return self.target_emb(gene_ids)
 
     def _gene_embedding(
-        self,
-        gene_ids: torch.Tensor,
-        gene_vals: torch.Tensor,
-        depths: torch.Tensor,
+            self,
+            gene_ids: torch.Tensor,
+            gene_vals: torch.Tensor,
+            depths: torch.Tensor,
     ) -> torch.Tensor:
 
         if self.embedding_strategy == "binned":
@@ -444,12 +470,21 @@ class GatedMLP(nn.Module):
             input_depth_emb = self.input_depth_val_emb(depths[:, 1:2]) + self.input_depth_emb
             if not self.second_layer_RDA:
                 output = torch.concat((output, target_depth_emb, input_depth_emb), dim=1)
-                deptch_vetors = None
+                depth_vectors = None
             else:
-                deptch_vetors = torch.concat((target_depth_emb, input_depth_emb), dim=1)
+                depth_vectors = torch.concat((target_depth_emb, input_depth_emb), dim=1)
+        else:
+            depth_vectors = None
 
+        return output, depth_vectors
 
-        return output, deptch_vetors
+    def output_theta_emb(self, gene_target_ids: torch.Tensor):
+
+        return self.theta(gene_target_ids) + 1.0 if self.loss == "ZINB" else None
+
+    def output_pi_emb(self, gene_target_ids: torch.Tensor):
+
+        return self.pi(gene_target_ids) if self.loss == "ZINB" else None
 
     def forward(
         self,
@@ -463,7 +498,7 @@ class GatedMLP(nn.Module):
         key_padding_mask = None
         input_query = self.query_emb.repeat(len(gene_ids), 1, 1)
 
-        key_vals, deptch_vetors = self._gene_embedding(gene_ids, gene_vals, depths)
+        key_vals, depth_vectors = self._gene_embedding(gene_ids, gene_vals, depths)
         gene_query = self._target_embedding(gene_target_ids)
 
         # Main calculation of latent variables
@@ -472,7 +507,7 @@ class GatedMLP(nn.Module):
         )
 
         if self.second_layer_RDA:
-            latent = torch.concat((latent, deptch_vetors), dim=1)
+            latent = torch.concat((latent, depth_vectors), dim=1)
 
         latent = self.gmlp(latent)
         gene_pred = self.decoder(latent, gene_query)
@@ -482,13 +517,72 @@ class GatedMLP(nn.Module):
             for k in self.cell_properties.keys():
 
                 query = self.feature_emb[k].repeat(len(gene_ids), 1, 1).to(latent.device)
-                #print("A", k, latent.shape, query.shape)
                 feature_pred[k] = self.feature_decoder[k](latent, query)
 
         else:
             feature_pred = None
 
         return gene_pred, latent, feature_pred
+
+    @staticmethod
+    def sample_zinb(mu, theta, pi, eps=1e-8):
+
+        # model outputs log mu
+        mu = torch.exp(mu)
+        theta = F.softplus(theta)
+
+        mu = mu.clamp(min=eps)
+        theta = theta.clamp(min=eps)
+
+        # Step 1: Dropout mask from pi (zero inflation)
+        pi_prob = torch.sigmoid(pi)
+        dropout_mask = torch.bernoulli(1.0 - pi_prob)
+
+        # Step 2: NB sampling via Gamma-Poisson
+        gamma_shape = theta
+        gamma_rate = theta / mu  # inverse scale
+        gamma_sample = torch.distributions.Gamma(gamma_shape, gamma_rate).sample()
+        nb_sample = torch.poisson(gamma_sample)
+
+        # Apply dropout mask
+        return dropout_mask * nb_sample
+
+
+    def generate_samples(
+        self,
+        gene_ids: torch.Tensor,
+        gene_target_ids: torch.Tensor,
+        gene_vals: torch.Tensor,
+        depths: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+
+        gene_pred, latent, _ = self.forward(
+            gene_ids, gene_target_ids, gene_vals, None, depths,
+        )
+
+        if self.loss == "ZINB":
+            if self.output_pi:
+                theta_gene = self.output_theta_emb(gene_target_ids)
+                theta = theta_gene[..., 0].to(torch.float32)
+                pi = gene_pred[..., 1].to(torch.float32)
+
+            else:
+                query = self.theta_pi_cell_emb.repeat(len(gene_ids), 1, 1).to(latent.device)
+                theta_pi_cell_pred = self.decoder_theta_pi(latent, query)
+                theta_gene = self.output_theta_emb(gene_target_ids)
+                theta = (theta_pi_cell_pred[..., 0] + theta_gene[..., 0]).to(torch.float32)
+                pi_gene = self.output_pi_emb(gene_target_ids)
+                pi = (theta_pi_cell_pred[..., 1] + pi_gene[..., 0]).to(torch.float32)
+                #print("AAA", theta_pi_cell_pred[..., 1])
+                #print("BBB", pi)
+
+            mu = gene_pred[..., 0].to(torch.float32)
+            samples = self.sample_zinb(mu, theta, pi)
+            return samples
+
+        else:
+            return gene_pred
+
 
 
 class Exceiver_atacseq(nn.Module):
@@ -946,7 +1040,7 @@ def load_model(model_save_path, model):
                 params_loaded.append(n)
                 loaded = True
         if not loaded:
-            print(f"{k} not loaded")
+            print(f"{k} not loaded, {v.shape}")
 
     model.load_state_dict(state_dict, strict=False)
     print(f"Number of params loaded: {len(params_loaded)}")

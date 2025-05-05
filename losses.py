@@ -62,32 +62,69 @@ class ZINB(nn.Module):
         self.eps = eps
         self.reduction = reduction
 
-    def forward(self, x, mu, theta, pi):
+    def forward(self, x, mu, theta, pi, eps=1e-8, reduction='mean'):
 
         """
-        log_mu, log_theta, pi_logits = model(input)
-        mu = torch.exp(log_mu)
-        theta = torch.exp(log_theta)
+        Compute the ZINB (Zero-Inflated Negative Binomial) loss.
 
-        loss = zinb_loss(x_true, mu, theta, pi_logits)
-        loss.backward()
+        Parameters:
+        -----------
+        x : torch.Tensor
+            Observed count data (batch_size x genes).
+        mu : torch.Tensor
+            Mean of Negative Binomial (after softplus or exp to ensure positivity).
+        theta : torch.Tensor
+            Inverse dispersion (after softplus to ensure positivity).
+        pi : torch.Tensor
+            Dropout logits (before sigmoid).
+        eps : float
+            Small number for numerical stability.
+        reduction : str
+            'mean' | 'sum' | 'none' : how to reduce the final loss.
+
+        Returns:
+        --------
+        loss : torch.Tensor
+            Scalar or vector loss.
         """
-        softplus_pi = F.softplus(-pi)  # log(1 + exp(-pi)) for stability
+        dtype = x.dtype
+
+        theta = torch.clamp(theta, min=eps)
+        mu = torch.clamp(mu, min=eps)
+
+        #  uses log(sigmoid(x)) = -softplus(-x)
+        softplus_pi = F.softplus(-pi)
+        # eps to make it positive support and taking the log
+        log_theta_mu_eps = torch.log(theta + mu + eps)
+        pi_theta_log = -pi + theta * (torch.log(theta + eps) - log_theta_mu_eps)
+
+        case_zero = F.softplus(pi_theta_log) - softplus_pi
+        mul_case_zero = torch.mul((x < eps).to(dtype), case_zero)
+
+        case_non_zero = (
+                -softplus_pi
+                + pi_theta_log
+                + x * (torch.log(mu + eps) - log_theta_mu_eps)
+                + torch.lgamma(x + theta)
+                - torch.lgamma(theta)
+                - torch.lgamma(x + 1)
+        )
+        mul_case_non_zero = torch.mul((x > eps).to(dtype), case_non_zero)
+
+        loss = mul_case_zero + mul_case_non_zero
+
+        theta_reg = torch.mean((theta - 1.0) ** 2)
         pi_prob = torch.sigmoid(pi)
+        pi_reg = torch.mean(-(0.5 * torch.log(pi_prob + eps) + 0.5 * torch.log(1 - pi_prob + eps)))
 
-        t1 = torch.lgamma(theta + self.eps) + torch.lgamma(x + 1.0) - torch.lgamma(x + theta + self.eps)
-        t2 = (theta + self.eps) * torch.log(theta + self.eps) + (x + self.eps) * torch.log(mu + self.eps)
-        t3 = (theta + x + self.eps) * torch.log(theta + mu + self.eps)
-        nb_case = t1 + t2 - t3  # log NB likelihood
+        regulairization = 1e-3 * theta_reg + 1e-3 * pi_reg
 
-        zero_case = -softplus_pi + torch.log(pi_prob + (1.0 - pi_prob) * torch.exp(nb_case))
+        loss = loss - regulairization
 
-        nb_case = -softplus_pi - pi_prob + (1.0 - pi_prob) * torch.exp(nb_case)
-        result = torch.where(x < 1e-8, zero_case, nb_case)
 
-        if self.reduction == 'mean':
-            return -result.mean()
-        elif self.reduction == 'sum':
-            return -result.sum()
+        if reduction == 'mean':
+            return -loss.mean()
+        elif reduction == 'sum':
+            return -loss.sum()
         else:
-            return -result
+            return -loss  # 'none'

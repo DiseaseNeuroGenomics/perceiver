@@ -121,9 +121,21 @@ class Decoder(nn.Module):
                 nn.Dropout(dropout),
             ]
 
-        seq += [nn.Linear(hidden_expansion * seq_dim, n_out)]
+        output_layer = nn.Linear(hidden_expansion * seq_dim, n_out)
+        if n_out == 3:
+            # Now manually initialize:
+            # nn.init.xavier_uniform_(output_layer.weight, gain=0.1)  # or another sensible init
+            nn.init.zeros_(output_layer.bias)
+
+            # Then set pi bias to a negative value
+            with torch.no_grad():
+                output_layer.bias[2].fill_(-3.0)  # Or maybe -3.0 for even smaller dropout
+
+        seq += [output_layer]
 
         self.gene_mlp = nn.Sequential(*seq)
+
+
 
     def forward(self, latent: torch.Tensor, gene_query: torch.Tensor):
 
