@@ -55,7 +55,7 @@ model_cfg = {
     "seq_dim": 512,
     "query_len": 64,
     "query_dim": 512,
-    "n_layers": 16,
+    "n_layers": 20,
     "n_heads": 8,
     "dim_feedforward": 1024,
     "dropout": 0.0,

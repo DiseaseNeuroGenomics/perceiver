@@ -2,6 +2,7 @@ from typing import Any, Dict, List, Optional
 
 import os, shutil
 import copy
+import math
 import pickle
 import torch
 import numpy as np
@@ -17,14 +18,13 @@ from torch.distributions.normal import Normal
 from losses import ZINB
 
 
-
 class BaseTask(pl.LightningModule):
 
     def __init__(
-        self,
-        network,
-        task_cfg,
-        **kwargs
+            self,
+            network,
+            task_cfg,
+            **kwargs
     ):
 
         # Initialize superclass
@@ -78,15 +78,15 @@ class BaseTask(pl.LightningModule):
         )
 
     def optimizer_step(
-        self,
-        current_epoch,
-        batch_nb,
-        optimizer,
-        closure,
-        on_tpu=None,
-        using_native_amp=None,
-        using_lbfgs=None,
-        min_lr=1e-8,
+            self,
+            current_epoch,
+            batch_nb,
+            optimizer,
+            closure,
+            on_tpu=None,
+            using_native_amp=None,
+            using_lbfgs=None,
+            min_lr=1e-8,
     ):
 
         # warm up lr
@@ -108,10 +108,10 @@ class BaseTask(pl.LightningModule):
 
 class RecursiveInference(BaseTask):
     def __init__(
-        self,
-        network,
-        task_cfg,
-        **kwargs
+            self,
+            network,
+            task_cfg,
+            **kwargs
     ):
 
         # Initialize superclass
@@ -121,11 +121,10 @@ class RecursiveInference(BaseTask):
             if not "feature" in n:
                 p.requires_grad_(False)
 
-        #self._load_gene_perturb_info()
+        # self._load_gene_perturb_info()
         self._create_results_dict()
         self.source_code_copied = False
-        self.iterations_per_gene = 50
-
+        self.iterations_per_gene = 25
 
     def _load_gene_perturb_info(self):
         self.gene_perturb = self.task_cfg["gene_perturb"]
@@ -143,23 +142,22 @@ class RecursiveInference(BaseTask):
 
         self.results = {
             "gene_names": self.gene_names,
-            #"gene_perturb": self.gene_perturb,
-            #"gene_perturb_idx": self.gene_perturb_idx,
+            # "gene_perturb": self.gene_perturb,
+            # "gene_perturb_idx": self.gene_perturb_idx,
             "actual_exp": [],
             "pred_exp": {k: [] for k in range(50)},
             "perturb_gene": [],
             "counts": [],
         }
 
-
-
     def _subsample_batch(self, batch):
 
         gene_ids, gene_target_ids, gene_vals, gene_targets, depths, _, _, cell_idx = batch
 
         # search for out perturb in the input
-
-        gene_ids_with_exp = gene_ids * (gene_vals > 0).to(torch.int64)
+        gene_ids_with_exp = gene_ids * (
+                gene_vals >= math.log(1 + self.task_cfg["min_count_gene_expression"])
+        ).to(torch.int64)
 
         perturb_idx = torch.where(gene_ids_with_exp == self.gene_perturb_idx)
         if len(perturb_idx[0]) < 2:
@@ -171,7 +169,7 @@ class RecursiveInference(BaseTask):
             gene_target_ids[perturb_idx[0]],
             gene_vals[perturb_idx[0]],
             gene_targets[perturb_idx[0]],
-            #key_padding_mask[perturb_idx[0]],
+            # key_padding_mask[perturb_idx[0]],
             depths[perturb_idx[0]] if depths is not None else None,
             [cell_idx[i] for i in perturb_idx[0]],
         )
@@ -191,17 +189,16 @@ class RecursiveInference(BaseTask):
         # reset after validation check
         if self.validation_count == 1:
             self.validation_count = -1
+            self.perturb_gene_count = -1
             self.actual_exp = []
             for k in range(50):
                 self.pred_exp[k] = []
-
 
     def validation_step(self, batch, batch_idx):
 
         n_recursive_steps = 25
         n_genes = len(self.gene_names)
         self.validation_count += 1
-
 
         if self.validation_count == 0:
             self.all_possible_gene_idx = self._get_possible_gene_index(batch)
@@ -210,23 +207,36 @@ class RecursiveInference(BaseTask):
                 self.gene_position[n] = i
 
         if self.validation_count % self.iterations_per_gene == 0:
-
             self.perturb_gene_count += 1
             self.perturb_gene = self.perturb_gene_list[self.perturb_gene_count]
             self.gene_perturb_idx = np.where(np.array(self.gene_names) == self.perturb_gene)[0][0]
             self.possible_gene_idx = list(set(self.all_possible_gene_idx) - set([self.gene_perturb_idx]))
             self.actual_exp = []
-            self.pred_exp = {k:[] for k in range(n_recursive_steps)}
+            self.pred_exp = {k: [] for k in range(n_recursive_steps)}
 
+        ## TEST
+        """
+        gene_ids, gene_target_ids, gene_vals, gene_targets, depths, _, _, cell_idx = batch
+        gene_pred_perturb, _, _ = self.network.forward(
+            gene_ids, gene_target_ids, gene_vals, None, depths,
+        )
+        print("cell", cell_idx)
+        print("D0", depths[:, 0].mean(), "D1", depths[:, 1].mean())
+        print("MU",gene_pred_perturb[..., 0].mean())
+        print("PI", gene_pred_perturb[..., 1].mean())
+        1/0
+        """
 
         batch, perturb_idx = self._subsample_batch(batch)
-        if batch is not None: # happens where there are too few samples containing the gene to perturb
+        if batch is not None:  # happens where there are too few samples containing the gene to perturb
 
             gene_ids, gene_target_ids, gene_vals, gene_targets, depths, cell_idx = batch
             batch_size, n_input_genes = gene_ids.shape
-            perturb_increase = - 1.0
-
-            perturb_gene_clamp_val = gene_vals[perturb_idx] + perturb_increase
+            if self.task_cfg["perturb_knockdown"]:
+                perturb_gene_clamp_val = 0.0
+            else:
+                gene_val_counts = torch.exp(gene_vals[perturb_idx]) - 1
+                perturb_gene_clamp_val = torch.log(1 + gene_val_counts + self.task_cfg["perturb_val"])
 
             for i in range(batch_size):
                 vals = np.zeros(n_genes, dtype=np.float32)
@@ -234,60 +244,53 @@ class RecursiveInference(BaseTask):
                 vals[gene_idx] = gene_targets[i, :].detach().to(torch.float32).cpu().numpy()
                 self.actual_exp.append(vals)
 
-            gene_target_ids = torch.tile(torch.arange(self.n_genes)[None, :], (batch_size, 1)).to(gene_target_ids.device)
+            gene_target_ids = torch.tile(torch.arange(self.n_genes)[None, :], (batch_size, 1)).to(
+                gene_target_ids.device)
 
-            gene_vals_perturb = copy.deepcopy(gene_vals)
+            # gene_vals_perturb = copy.deepcopy(gene_vals)
+            gene_vals_perturb = gene_vals
+            # gene_vals_perturb[perturb_idx] = copy.deepcopy(perturb_gene_clamp_val)
             gene_vals_perturb[perturb_idx] = perturb_gene_clamp_val
 
-            original_mean = gene_targets.mean()
+            pi_pred = None
 
             for k in range(n_recursive_steps):
 
-                #alpha = gene_vals_perturb.mean() / original_mean
-                #gene_vals_perturb = gene_vals_perturb / alpha
-
-                gene_pred_perturb, _, _ = self.network.forward(
-                    gene_ids, gene_target_ids, gene_vals_perturb, None, depths,
-                )
-
-
                 if self.task_cfg["loss"] == "ZINB":
 
-                    samples = self.network.generate_samples(gene_ids, gene_target_ids, gene_vals_perturb)
+                    samples, pi = self.network.generate_samples(gene_ids, gene_target_ids, gene_vals_perturb, depths,
+                                                                pi_pred=pi_pred)
+                    samples = torch.clamp(samples, min=0, max=254)
 
+                    # print("HIGH", (samples > 254).to(torch.float32).sum())
                     gene_pred_perturb = torch.log(1 + samples).to(torch.float32)
+                    pi_pred = copy.deepcopy(pi)
+                    if depths is not None:
+                        depth = samples.sum(dim=1)
+                        depths[:, 0] = torch.log(1 + depth)
+                        depths[:, 1] = torch.log(1 + depth)
 
                 else:
                     gene_pred_perturb = torch.clamp(gene_pred_perturb[..., 0].to(torch.float32), min=0.0)
-                #print(k, gene_pred_perturb[:, self.all_possible_gene_idx].mean(), gene_targets.mean(), gene_vals_perturb.mean(), gene_pred_perturb.shape)
-                #print(k, (gene_pred_perturb[:, self.all_possible_gene_idx] < 0).to(torch.float32).sum())
-                #print(k, theta.mean(), theta.min(), theta.max())
 
-                #for i in range(batch_size):
+                # for i in range(batch_size):
                 #    gene_pred_perturb[i, gene_ids[i, :]] = copy.deepcopy(gene_vals_perturb[i, :])
 
                 # print("XX", gene_vals_perturb.shape, perturb_gene_clamp_val.shape)
                 gene_ids[:, 0] = self.gene_perturb_idx
                 gene_vals_perturb[:, 0] = copy.deepcopy(perturb_gene_clamp_val)
-                gene_vals_perturb[:, 0] = 0.0
 
                 for i in range(batch_size):
-
                     idx_input = np.random.choice(self.possible_gene_idx, n_input_genes - 1, replace=False)
                     gene_ids[i, 1:] = torch.from_numpy(idx_input).to(gene_ids.device)
-                    #idx_input_vals = [self.gene_position[j] for j in idx_input]
-                    #gene_vals_perturb[i, 1:] = copy.deepcopy(gene_pred_perturb[i, idx_input_vals])
+                    # idx_input_vals = [self.gene_position[j] for j in idx_input]
+                    # gene_vals_perturb[i, 1:] = copy.deepcopy(gene_pred_perturb[i, idx_input_vals])
                     gene_vals_perturb[i, 1:] = copy.deepcopy(gene_pred_perturb[i, gene_ids[i, 1:]])
 
                     vals = np.zeros(n_genes, dtype=np.float32)
                     vals[self.all_possible_gene_idx] = gene_pred_perturb[i, self.all_possible_gene_idx].detach().to(
                         torch.float32).cpu().numpy()
                     self.pred_exp[k].append(vals)
-
-            #for i in range(batch_size):
-            #    vals = np.zeros(n_genes, dtype=np.float32)
-            #    vals[self.all_possible_gene_idx] = gene_pred_perturb[i, self.all_possible_gene_idx].detach().to(torch.float32).cpu().numpy()
-            #    self.pred_exp[k].append(vals)
 
         if self.validation_count % self.iterations_per_gene == self.iterations_per_gene - 1:
 
@@ -305,10 +308,10 @@ class RecursiveInference(BaseTask):
 
 class TFInference(BaseTask):
     def __init__(
-        self,
-        network,
-        task_cfg,
-        **kwargs
+            self,
+            network,
+            task_cfg,
+            **kwargs
     ):
 
         # Initialize superclass
@@ -329,7 +332,6 @@ class TFInference(BaseTask):
             if tf in self.gene_names:
                 self.tf_list_idx.append(np.where(np.array(self.gene_names) == tf)[0][0])
 
-
     def _create_results_dict(self):
 
         n_tfs = len(self.tf_list)
@@ -344,10 +346,9 @@ class TFInference(BaseTask):
             "actual_tf_exp": np.zeros((n_cells, n_tfs), dtype=np.float32),
         }
 
-
     def validation_step(self, batch, batch_idx):
 
-        gene_ids, gene_target_ids, gene_vals, gene_targets, key_padding_mask, depths, _, _,  cell_idx = batch
+        gene_ids, gene_target_ids, gene_vals, gene_targets, key_padding_mask, depths, _, _, cell_idx = batch
         batch_size, n_target_genes = gene_target_ids.shape
 
         gene_pred, _, _ = self.network.forward(
@@ -370,7 +371,7 @@ class TFInference(BaseTask):
             if i in gene_target_ids:
                 idx = np.where(gene_target_ids == i)[0]
                 rows = cell_idx[idx]
-                #cols = gene_target_ids[idx]
+                # cols = gene_target_ids[idx]
                 self.results["counts"][rows, j] += 1
                 self.results["pred_tf_exp"][rows, j] += gene_pred[idx]
                 self.results["actual_tf_exp"][rows, j] = gene_targets[idx]
@@ -379,10 +380,10 @@ class TFInference(BaseTask):
 class AllToAllPerutbation(BaseTask):
 
     def __init__(
-        self,
-        network,
-        task_cfg,
-        **kwargs
+            self,
+            network,
+            task_cfg,
+            **kwargs
     ):
         # Initialize superclass
         super().__init__(network, task_cfg)
@@ -392,7 +393,6 @@ class AllToAllPerutbation(BaseTask):
 
         self._create_results_dict()
 
-
     def _create_results_dict(self):
 
         self.results = {"gene_names": self.gene_names}
@@ -401,10 +401,9 @@ class AllToAllPerutbation(BaseTask):
         self.results["pos_var"] = np.zeros((N, N), dtype=np.float32)
         self.results["pos_count"] = np.zeros((N, N), dtype=np.uint16)
 
-        #self.results["neg_delta"] = np.zeros((N, N), dtype=np.float32)
-        #self.results["neg_var"] = np.zeros((N, N), dtype=np.float32)
-        #self.results["neg_count"] = np.zeros((N, N), dtype=np.uint16)
-
+        # self.results["neg_delta"] = np.zeros((N, N), dtype=np.float32)
+        # self.results["neg_var"] = np.zeros((N, N), dtype=np.float32)
+        # self.results["neg_count"] = np.zeros((N, N), dtype=np.uint16)
 
     def validation_step(self, batch, batch_idx):
 
@@ -428,16 +427,17 @@ class AllToAllPerutbation(BaseTask):
             gene_vals_perturb = copy.deepcopy(gene_vals.clone().detach())
             gene_vals_perturb[:, rnd_idx[n]] = gene_vals_perturb[:, rnd_idx[n]] + 1
             # TODO: add fix when binning inputs
-            #gene_vals_perturb[:, rnd_idx[n]] = torch.clip(
+            # gene_vals_perturb[:, rnd_idx[n]] = torch.clip(
             #    gene_vals_perturb[:, rnd_idx[n]] + rnd_inc, 0, self.n_bins-1
-            #)
+            # )
 
             gene_pred_perturb, _, _ = self.network.forward(
                 gene_ids, gene_target_ids, gene_vals_perturb, key_padding_mask, depths,
             )
 
             source_idx = gene_ids[:, rnd_idx[n]].to(torch.int16).detach().cpu().numpy()
-            delta = gene_pred_perturb.to(torch.float32).detach().cpu().numpy() - gene_pred.to(torch.float32).detach().cpu().numpy()
+            delta = gene_pred_perturb.to(torch.float32).detach().cpu().numpy() - gene_pred.to(
+                torch.float32).detach().cpu().numpy()
             delta = delta[:, :, 0]
 
             for i in range(batch_size):
@@ -497,10 +497,10 @@ class AllToAllPerutbation(BaseTask):
 
 class MSELoss(BaseTask):
     def __init__(
-        self,
-        network,
-        task_cfg,
-        **kwargs
+            self,
+            network,
+            task_cfg,
+            **kwargs
     ):
         # Initialize superclass
         super().__init__(network, task_cfg)
@@ -517,7 +517,6 @@ class MSELoss(BaseTask):
         self._create_results_dict()
         self.source_code_copied = False
 
-
     def _create_results_dict(self):
 
         self.results = {"epoch": 0, "gene_names": self.gene_names}
@@ -525,10 +524,9 @@ class MSELoss(BaseTask):
         for k in self.results_list:
             self.results[k] = []
 
-
     def training_step(self, batch, batch_idx):
 
-        gene_ids, gene_target_ids, gene_vals, gene_targets, key_padding_mask, depths,_, _, _ = batch
+        gene_ids, gene_target_ids, gene_vals, gene_targets, key_padding_mask, depths, _, _, _ = batch
         gene_pred, latent, _ = self.network.forward(
             gene_ids, gene_target_ids, gene_vals, key_padding_mask, depths,
         )
@@ -563,7 +561,6 @@ class MSELoss(BaseTask):
 
         return gene_loss
 
-
     def validation_step(self, batch, batch_idx):
 
         gene_ids, gene_target_ids, gene_vals, gene_targets, key_padding_mask, depths, _, _, _ = batch
@@ -596,7 +593,6 @@ class MSELoss(BaseTask):
         self.log("exp_var", self.explained_var, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         self.log("mse", self.val_mse, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
 
-
     def on_validation_epoch_end(self):
 
         if not self.source_code_copied:
@@ -612,10 +608,10 @@ class MSELoss(BaseTask):
 
 class Annotation(pl.LightningModule):
     def __init__(
-        self,
-        network,
-        task_cfg,
-        **kwargs
+            self,
+            network,
+            task_cfg,
+            **kwargs
     ):
 
         # Initialize superclass
@@ -624,7 +620,7 @@ class Annotation(pl.LightningModule):
 
         for n, p in self.network.named_parameters():
 
-            #if not ("feature" in n or "decoder" in n or "31" in n or "30" in n or "29" in n or "28" in n or "27" in n or "26" in n): # and not cond:
+            # if not ("feature" in n or "decoder" in n or "31" in n or "30" in n or "29" in n or "28" in n or "27" in n or "26" in n): # and not cond:
             if not "feature" in n:
                 p.requires_grad_(False)
 
@@ -642,7 +638,6 @@ class Annotation(pl.LightningModule):
         self.n_bins = task_cfg["n_bins"] if "n_bins" in task_cfg else None
         self.scale_target_depth = 3.0
 
-
         self._create_results_dict()
         self.source_code_copied = False
 
@@ -657,18 +652,17 @@ class Annotation(pl.LightningModule):
         for k, cell_prop in self.cell_properties.items():
             if cell_prop["discrete"]:
                 # discrete variable, set up cross entropy module
-                #weight = torch.from_numpy(
+                # weight = torch.from_numpy(
                 #    np.float32(np.clip(1 / cell_prop["freq"], 0.0001, 10000.0))
-                #) if self.balance_classes else None
+                # ) if self.balance_classes else None
 
                 weight = torch.from_numpy(
                     np.float32(np.clip((np.max(cell_prop["freq"]) / cell_prop["freq"]), 1.0, 25.0))
                 ) if self.balance_classes else None
 
-
-                #print("Weight", weight)
+                # print("Weight", weight)
                 self.cell_cross_ent[k] = nn.CrossEntropyLoss(weight=weight, reduction="none", ignore_index=-100)
-                #self.cell_cross_ent[k] = FocalLoss(len(cell_prop["values"]), gamma=2.0, alpha=2.0)
+                # self.cell_cross_ent[k] = FocalLoss(len(cell_prop["values"]), gamma=2.0, alpha=2.0)
                 self.cell_accuracy[k] = Accuracy(
                     task="multiclass", num_classes=len(cell_prop["values"]), average="macro",
                 )
@@ -684,8 +678,6 @@ class Annotation(pl.LightningModule):
             if cell_prop["discrete"]:
                 n = len(cell_prop["values"])
                 self.results[f"{k}_matrix"] = np.zeros((n, n))
-
-
 
     def _copy_source_code(self):
 
@@ -721,11 +713,10 @@ class Annotation(pl.LightningModule):
 
             else:
                 pred = cell_pred[k][:, 0]
-                try: # rare error
+                try:  # rare error
                     self.cell_explained_var[k].update(pred[idx], cell_targets[idx, n])
                 except:
                     self.cell_explained_var[k].update(pred, cell_targets[idx, n])
-
 
         for k, v in self.cell_accuracy.items():
             self.log(k, v, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
@@ -733,10 +724,10 @@ class Annotation(pl.LightningModule):
             self.log(k, v, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
 
     def _feature_loss(
-        self,
-        cell_pred: Dict[str, torch.Tensor],
-        cell_prop_vals: torch.Tensor,
-        cell_mask: torch.Tensor,
+            self,
+            cell_pred: Dict[str, torch.Tensor],
+            cell_prop_vals: torch.Tensor,
+            cell_mask: torch.Tensor,
     ):
 
         cell_loss = 0.0
@@ -765,16 +756,16 @@ class Annotation(pl.LightningModule):
 
         # depths[:, 0] = depths[:, 0] * self.scale_target_depth
         d = torch.exp(depths[:, 0])
-        depths[:, 0] = torch.log( d * 1)
+        depths[:, 0] = torch.log(d * 1)
 
         gene_pred, _, feature_pred = self.network.forward(
             gene_ids, gene_target_ids, gene_vals, depths=depths,
         )
 
-        #print("TRAIN", gene_pred.mean())
+        # print("TRAIN", gene_pred.mean())
 
         feature_loss = self._feature_loss(feature_pred, cell_prop_vals, cell_prop_mask)
-        #gene_loss = self.mse(gene_pred, gene_targets.unsqueeze(2))
+        # gene_loss = self.mse(gene_pred, gene_targets.unsqueeze(2))
         gene_loss = 0.0
 
         self.log("gene_loss", gene_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
@@ -782,9 +773,7 @@ class Annotation(pl.LightningModule):
 
         return feature_loss + 500 * gene_loss
 
-
     def validation_step(self, batch, batch_idx):
-
 
         (
             gene_ids, gene_target_ids, gene_vals, gene_targets,
@@ -798,10 +787,8 @@ class Annotation(pl.LightningModule):
         d = torch.exp(depths[:, 0])
         depths[:, 0] = torch.log(d * 1)
 
-
         self._feature_scores(feature_pred, cell_prop_vals, cell_prop_mask)
         self._feature_loss(feature_pred, cell_prop_vals, cell_prop_mask)
-
 
     def on_validation_epoch_end(self):
 
@@ -820,16 +807,16 @@ class Annotation(pl.LightningModule):
 
     def configure_optimizers(self):
 
-        #params = [p for n, p in self.network.named_parameters() if not "gmlp" in n]
+        # params = [p for n, p in self.network.named_parameters() if not "gmlp" in n]
         out_params = [p for n, p in self.network.named_parameters() if "feature_decoder.cell_type.gene_mlp" in n]
-        other_params = [p for n, p in self.network.named_parameters() if "feature_decoder.cell_type.decoder_cross_attn" in n]
-
+        other_params = [p for n, p in self.network.named_parameters() if
+                        "feature_decoder.cell_type.decoder_cross_attn" in n]
 
         return torch.optim.AdamW(
-            #[
+            # [
             #    {"params": out_params0, "lr": self.task_cfg["learning_rate"]},
             #    {"params": params1, "lr": self.task_cfg["learning_rate"]},
-            #],
+            # ],
             self.network.parameters(),
             lr=self.learning_rate,
             weight_decay=self.weight_decay,
@@ -837,21 +824,18 @@ class Annotation(pl.LightningModule):
         )
 
 
-
-
 class MSELoss_atac(pl.LightningModule):
     def __init__(
-        self,
-        network,
-        task_cfg,
-        **kwargs
+            self,
+            network,
+            task_cfg,
+            **kwargs
     ):
 
         # Initialize superclass
         super().__init__()
         self.network = network
         self.task_cfg = task_cfg
-
 
         self.cell_prop_cross_ent = None
         self.cell_prop_accuracy = None
@@ -869,22 +853,21 @@ class MSELoss_atac(pl.LightningModule):
             self.gene_explained_var = ExplainedVariance()
             self.metrics = MetricCollection([ExplainedVariance()])
 
-
         self._create_results_dict()
         self.source_code_copied = False
 
     def _create_results_dict(self):
 
         self.results = {"epoch": 0, "gene_names": self.gene_names}
-        #for k in ["gene_target_ids", "gene_targets", "gene_vals", "gene_ids", "gene_pred"]:
+        # for k in ["gene_target_ids", "gene_targets", "gene_vals", "gene_ids", "gene_pred"]:
         #    self.results[k] = []
         # N = len(self.gene_names)
         N = 16594
-        #self.results["target_gene_counts"] = np.zeros(N)
-        #self.results["target_gene_preds"] = np.zeros(N)
-        #self.results["atac_data"] = np.zeros((200, N, 128), dtype=np.float32)
-        #self.results["pred_atac_data"] = np.zeros((200, N, 128), dtype=np.float32)
-        #self.gcount = np.zeros(N)
+        # self.results["target_gene_counts"] = np.zeros(N)
+        # self.results["target_gene_preds"] = np.zeros(N)
+        # self.results["atac_data"] = np.zeros((200, N, 128), dtype=np.float32)
+        # self.results["pred_atac_data"] = np.zeros((200, N, 128), dtype=np.float32)
+        # self.gcount = np.zeros(N)
 
     def _copy_source_code(self):
 
@@ -922,17 +905,16 @@ class MSELoss_atac(pl.LightningModule):
 
         return loss
 
-
     def validation_step(self, batch, batch_idx):
 
-        #atac_chr, atac_pos, atac_pos_abs, gene_ids, gene_vals, gene_target_ids, gene_target_vals, padding_mask_atac, padding_mask_genes = batch
-        #gene_pred, latent = self.network.forward(
+        # atac_chr, atac_pos, atac_pos_abs, gene_ids, gene_vals, gene_target_ids, gene_target_vals, padding_mask_atac, padding_mask_genes = batch
+        # gene_pred, latent = self.network.forward(
         #    atac_chr, atac_pos, atac_pos_abs, gene_ids, gene_vals, gene_target_ids, padding_mask_atac,
         #    padding_mask_genes,
-        #)
+        # )
         atac_gene_based, gene_ids, gene_vals, gene_target_ids, gene_target_vals, padding_mask_atac, padding_mask_genes = batch
         gene_pred, atac_pred, latent = self.network.forward(
-            atac_gene_based, gene_ids, gene_vals, gene_target_ids, padding_mask_atac,padding_mask_genes,
+            atac_gene_based, gene_ids, gene_vals, gene_target_ids, padding_mask_atac, padding_mask_genes,
         )
         """
         for i in range(gene_pred.shape[0]):
@@ -942,13 +924,13 @@ class MSELoss_atac(pl.LightningModule):
             self.results["target_gene_preds"][idx] += y
         """
 
-        #self.results["gene_target_ids"].append(gene_target_ids.to(torch.int16).detach().cpu().numpy())
-        #self.results["gene_vals"].append(gene_vals.detach().cpu().numpy())
-        #self.results["gene_ids"].append(gene_ids.detach().cpu().numpy())
-        #self.results["gene_targets"].append(gene_targets.detach().cpu().numpy())
-        #self.results["gene_pred"].append(gene_pred.to(torch.float32).detach().cpu().numpy())
-        #self.results["atac_data"].append(atac_gene_based.to(torch.float32).detach().cpu().numpy())
-        #self.results["pred_atac_data"].append(atac_pred.to(torch.float32).detach().cpu().numpy())
+        # self.results["gene_target_ids"].append(gene_target_ids.to(torch.int16).detach().cpu().numpy())
+        # self.results["gene_vals"].append(gene_vals.detach().cpu().numpy())
+        # self.results["gene_ids"].append(gene_ids.detach().cpu().numpy())
+        # self.results["gene_targets"].append(gene_targets.detach().cpu().numpy())
+        # self.results["gene_pred"].append(gene_pred.to(torch.float32).detach().cpu().numpy())
+        # self.results["atac_data"].append(atac_gene_based.to(torch.float32).detach().cpu().numpy())
+        # self.results["pred_atac_data"].append(atac_pred.to(torch.float32).detach().cpu().numpy())
 
         """
         x0 = atac_gene_based.to(torch.float32).detach().cpu().numpy()
@@ -966,7 +948,7 @@ class MSELoss_atac(pl.LightningModule):
 
         """
 
-        #self.results["atac_data"] += atac_gene_based[gene_target_ids.to(torch.float32).detach().cpu().numpy()
+        # self.results["atac_data"] += atac_gene_based[gene_target_ids.to(torch.float32).detach().cpu().numpy()
 
         if self.task_cfg["predict_atac"]:
             # print("AAAA", atac_pred.shape, atac_gene_based.shape)
@@ -975,7 +957,6 @@ class MSELoss_atac(pl.LightningModule):
         else:
             self.gene_explained_var(gene_pred, gene_target_vals.unsqueeze(2))
             self.log("gene_ex", self.gene_explained_var, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
-
 
     def on_validation_epoch_end(self):
 
@@ -991,7 +972,7 @@ class MSELoss_atac(pl.LightningModule):
         #for k in ["gene_target_ids", "gene_targets", "gene_vals", "gene_ids", "gene_pred"]:
         #    if len(self.results[k]) > 0:
         #        self.results[k] = np.concatenate(self.results[k], axis=0)
-        
+
         self.results["epoch"] = self.current_epoch + 1
         #for k in ["gene_target_ids", "gene_targets", "gene_vals", "gene_ids", "gene_pred"]:
         #    self.results[k] = []
@@ -999,18 +980,16 @@ class MSELoss_atac(pl.LightningModule):
         #self.results["target_gene_counts"] = np.zeros(N)
         #self.results["target_gene_preds"] = np.zeros(N)
         """
-        #self.results["atac_data"] = np.mean(np.stack(self.results["atac_data"]), axis=(0,1))
-        #self.results["pred_atac_data"] = np.mean(np.stack(self.results["pred_atac_data"]), axis=(0, 1))
+        # self.results["atac_data"] = np.mean(np.stack(self.results["atac_data"]), axis=(0,1))
+        # self.results["pred_atac_data"] = np.mean(np.stack(self.results["pred_atac_data"]), axis=(0, 1))
         fn = f"{self.trainer.log_dir}/test_results.pkl"
-        #pickle.dump(self.results, open(fn, "wb"))
+        # pickle.dump(self.results, open(fn, "wb"))
         N = 16594
         # self.results["target_gene_counts"] = np.zeros(N)
         # self.results["target_gene_preds"] = np.zeros(N)
-        #self.results["atac_data"] = np.zeros((200, N, 128), dtype=np.float32)
-        #self.results["pred_atac_data"] = np.zeros((200, N, 128), dtype=np.float32)
-        #self.gcount = np.zeros(N)
-
-
+        # self.results["atac_data"] = np.zeros((200, N, 128), dtype=np.float32)
+        # self.results["pred_atac_data"] = np.zeros((200, N, 128), dtype=np.float32)
+        # self.gcount = np.zeros(N)
 
     def configure_optimizers(self):
 
@@ -1054,20 +1033,19 @@ class MSELoss_atac(pl.LightningModule):
             for pg in optimizer.param_groups:
                 pg["lr"] = lr_scale * self.task_cfg["learning_rate"]
 
-
         # update params
         optimizer.step(closure=closure)
 
 
 class AdverserialLoss(MSELoss):
     def __init__(
-        self,
-        network,
-        task_cfg,
-        adv_cell_prop: str = "SubID",
-        adv_loss_ratio: float = 0.05,
-        adv_threshold: float = 0.0,
-        **kwargs
+            self,
+            network,
+            task_cfg,
+            adv_cell_prop: str = "SubID",
+            adv_loss_ratio: float = 0.05,
+            adv_threshold: float = 0.0,
+            **kwargs
     ):
         # Initialize superclass
         super().__init__(network, task_cfg, automatic_optimization=False, **kwargs)
@@ -1161,12 +1139,10 @@ class AdverserialLoss(MSELoss):
             sync_dist=True,
         )
 
-
     def on_train_epoch_end(self):
         """Need to manually save checkpoints as automatic checkpointing is disabled for some reason..."""
         ckpt_path = self.logger.log_dir + "/saved_model.ckpt"
         self.trainer.save_checkpoint(ckpt_path)
-
 
     def update_lr(self, opt0, opt1):
 
@@ -1177,7 +1153,6 @@ class AdverserialLoss(MSELoss):
             for pg in opt.param_groups:
                 pg["lr"] = lr
         return opt0, opt1
-
 
     def configure_optimizers(self):
 
@@ -1190,6 +1165,6 @@ class AdverserialLoss(MSELoss):
             self.adv_params,
             lr=0.0,
             weight_decay=self.task_cfg["weight_decay"],
-         )
+        )
 
         return opt0, opt1

@@ -6,8 +6,8 @@ import pytorch_lightning as pl
 from pytorch_lightning.strategies.ddp import DDPStrategy
 from datasets import DataModule
 from networks import Exceiver, GatedMLP, load_model
-from tasks import MSELoss, AdverserialLoss
-from config_immune import dataset_cfg, task_cfg, model_cfg, trainer_cfg
+from tasks import RecursiveInference
+from config_recursive_microglia import dataset_cfg, task_cfg, model_cfg, trainer_cfg
 import warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -28,15 +28,21 @@ def check_train_test_set(cfg):
     print(f"Number of train users in test set: {len(train_test_inter)}")
 
 
-def main(train_idx, test_idx):
+def main(train_idx, test_idx, perturb_genes):
 
     # Set seed
-    pl.seed_everything(42)
+    pl.seed_everything(45)
 
     # check_train_test_set(dataset_cfg)
 
+
     dataset_cfg["train_idx"] = train_idx
     dataset_cfg["test_idx"] = test_idx
+    #dataset_cfg["RDA"] = False
+
+    #dataset_cfg["cell_restrictions"] = {"cell_type": "K562", "perturbation": "control"}
+    #dataset_cfg["cell_restrictions"] = {"cell_type": "RPE", "perturbation": "control"}
+    task_cfg["perturb_genes"] = perturb_genes
 
     #dataset_cfg["cell_restrictions"] = {"class": cell_class, }
 
@@ -44,6 +50,7 @@ def main(train_idx, test_idx):
     dm = DataModule(**dataset_cfg)
     dm.setup("train")
     task_cfg["gene_names"] = dm.train_dataset.gene_names
+    task_cfg["cell_idx"] = dm.train_dataset.cell_idx
 
     # Set up data module
     dm = DataModule(**dataset_cfg)
@@ -52,7 +59,7 @@ def main(train_idx, test_idx):
     model_cfg["seq_len"] = dm.n_genes
     model_cfg["cell_properties"] = dm.cell_properties
     model_cfg["n_bins"] = dataset_cfg["n_bins"]
-    model_cfg["RDA"] = dataset_cfg["RDA"]
+    #model_cfg["RDA"] = True
     task_cfg["cell_properties"] = dm.cell_properties
 
     # Create network
@@ -62,25 +69,22 @@ def main(train_idx, test_idx):
     if model_cfg["model_save_path"] is not None:
         model = load_model(model_cfg["model_save_path"], model)
 
-    for n, p in model.named_parameters():
-        if "query" in n:
-            print(n, p.size())
+    #for n, p in model.named_parameters():
+    #    print(n, p.size())
 
-    task = MSELoss(network=model, task_cfg=task_cfg)
-
-    print("!!!!!!!!!!!!!!!!!!!!! enable_checkpointing FALSE !!!!!!!!!!!!!")
+    task = RecursiveInference(network=model, task_cfg=task_cfg)
 
     trainer = pl.Trainer(
         enable_checkpointing=False,
         accelerator='gpu',
         devices=trainer_cfg["n_devices"],
-        max_epochs=1_000,
+        max_epochs=1,
         gradient_clip_val=trainer_cfg["grad_clip_value"],
         accumulate_grad_batches=trainer_cfg["accumulate_grad_batches"],
         precision=trainer_cfg["precision"],
         strategy=DDPStrategy(find_unused_parameters=True) if trainer_cfg["n_devices"] > 1 else "auto",
-        val_check_interval=2_000,
-        limit_val_batches=200,
+        val_check_interval=1,
+        limit_val_batches=50,
     )
 
     trainer.fit(task, dm)
@@ -89,15 +93,15 @@ def main(train_idx, test_idx):
 if __name__ == "__main__":
 
     meta = pickle.load(open(dataset_cfg["metadata_path"], "rb"))
-    if "splits" in meta:
-        train_idx = meta["splits"]["train_idx"]
-        test_idx = meta["splits"]["test_idx"]
-    else:
-        N = len(meta["obs"]["experiment"])
-        test_idx = np.random.choice(N, N//100, replace=False)
-        train_idx = list(set(np.arange(N)) - set(test_idx))
 
-    #print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! train + tes")
-    #train_idx = np.arange(N)
-    #test_idx = np.arange(N)
-    main(train_idx, test_idx)
+    n_samples = len(meta["obs"]["barcode"])
+    print(n_samples)
+
+    idx = np.where((np.array(meta["obs"]["mg_subtype"]) == "Homeo_CECR2"))
+    perturb_genes = ["TNFRSF1A", "IL1R1", "IFNGR1", "TREM2", "DPYD", "MITF", "GPNMB", "APOE", "IL6ST", "SPP1", "PTPRG", "SAMD4A", "HIF1A", "ACSL1", "CD163"]
+    perturb_genes = ["IL15", "CX3CR1",  "FRMD4A", "OXR1", "ELMO1", "HSPA1A", "TNFRSF1A", "IL1R1", "IFNGR1", "TREM2", "DPYD", "MITF", "GPNMB",
+                     "APOE", "IL6ST", "SPP1", "PTPRG", "SAMD4A", "HIF1A", "ACSL1", "CD163", "HSPA1A"]
+
+    del meta
+
+    main(idx, idx, perturb_genes)

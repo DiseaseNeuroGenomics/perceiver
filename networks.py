@@ -2,7 +2,7 @@
 # From paper https://arxiv.org/abs/2210.14330
 # other possible data from: https://figshare.com/articles/dataset/Tabula_Sapiens_release_1_0/14267219
 # other public covid data: https://onlinelibrary.wiley.com/doi/10.1002/ctd2.104
-
+import copy
 from typing import Any, Dict, List, Literal, Optional, Tuple
 import numpy as np
 import torch
@@ -23,19 +23,19 @@ class Exceiver(nn.Module):
     # dropout: Value of ProcessSelfAttention dropout.
 
     def __init__(
-        self,
-        seq_len: int,
-        seq_dim: int,
-        query_len: int,
-        query_dim: int,
-        n_layers: int,
-        n_heads: int,
-        dim_feedforward: int,
-        embedding_strategy: Literal["binned", "continuous", "film"] = "continuous",
-        dropout: float = 0.0,  # for the process attention module
-        n_bins: Optional[int] = None,
-        n_out_feature: Optional[int] = None,
-        **kwargs,
+            self,
+            seq_len: int,
+            seq_dim: int,
+            query_len: int,
+            query_dim: int,
+            n_layers: int,
+            n_heads: int,
+            dim_feedforward: int,
+            embedding_strategy: Literal["binned", "continuous", "film"] = "continuous",
+            dropout: float = 0.0,  # for the process attention module
+            n_bins: Optional[int] = None,
+            n_out_feature: Optional[int] = None,
+            **kwargs,
     ):
 
         super().__init__()
@@ -45,8 +45,8 @@ class Exceiver(nn.Module):
         self.n_bins = n_bins
         self.embedding_strategy = embedding_strategy
         assert (
-                embedding_strategy != "binned" or (embedding_strategy == "binned" and n_bins is not None),
-                "n_bins must be specified if embedding strategy is 'binned'"
+            embedding_strategy != "binned" or (embedding_strategy == "binned" and n_bins is not None),
+            "n_bins must be specified if embedding strategy is 'binned'"
         )
 
         # create the gene embeddings based on whether to use rank ordering
@@ -69,10 +69,10 @@ class Exceiver(nn.Module):
             self.feature_decoder = Decoder(seq_dim, query_dim, dropout, n_out=n_out_feature)
 
     def encoder_attn_step(
-        self,
-        key_vals: torch.Tensor,
-        input_query: torch.Tensor,
-        key_padding_mask: Optional[torch.Tensor] = None,
+            self,
+            key_vals: torch.Tensor,
+            input_query: torch.Tensor,
+            key_padding_mask: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
 
         latent, encoder_weights = self.encoder_cross_attn(
@@ -97,13 +97,13 @@ class Exceiver(nn.Module):
 
     def _target_embedding(self, gene_ids: torch.Tensor) -> torch.Tensor:
 
-        #return self.gene_emb(gene_ids)
+        # return self.gene_emb(gene_ids)
         return self.target_emb(gene_ids)
 
     def _gene_embedding(
-        self,
-        gene_ids: torch.Tensor,
-        gene_vals: torch.Tensor,
+            self,
+            gene_ids: torch.Tensor,
+            gene_vals: torch.Tensor,
     ) -> torch.Tensor:
 
         if self.embedding_strategy == "binned":
@@ -113,14 +113,13 @@ class Exceiver(nn.Module):
         elif self.embedding_strategy == "film":
             return self.gene_emb(gene_ids) + self.gene_scale(gene_ids) * self.gene_val_emb(gene_vals)
 
-
     def forward(
-        self,
-        gene_ids: torch.Tensor,
-        gene_target_ids: torch.Tensor,
-        gene_vals: torch.Tensor,
-        key_padding_mask: Optional[torch.Tensor] = None,
-        decode_feature: bool = False,
+            self,
+            gene_ids: torch.Tensor,
+            gene_target_ids: torch.Tensor,
+            gene_vals: torch.Tensor,
+            key_padding_mask: Optional[torch.Tensor] = None,
+            decode_feature: bool = False,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
 
         input_query = self.query_emb.repeat(len(gene_ids), 1, 1)
@@ -132,8 +131,8 @@ class Exceiver(nn.Module):
         latent, encoder_weights = self.encoder_attn_step(
             key_vals, input_query, key_padding_mask
         )
-        #latent = key_vals
-        #print(latent.shape)
+        # latent = key_vals
+        # print(latent.shape)
         latent = self.process_self_attn(latent)
 
         gene_pred = self.decoder(latent, gene_query)
@@ -150,13 +149,12 @@ class Exceiver(nn.Module):
 class ATACDecoder(nn.Module):
 
     def __init__(
-        self,
-        seq_dim: int,
-        query_dim: int,
-        atac_window: int,
-        dropout: float = 0.0,  # for the process attention module
+            self,
+            seq_dim: int,
+            query_dim: int,
+            atac_window: int,
+            dropout: float = 0.0,  # for the process attention module
     ):
-
         super().__init__()
 
         self.decoder_cross_attn = CrossAttn(
@@ -172,7 +170,6 @@ class ATACDecoder(nn.Module):
         )
 
     def forward(self, latent: torch.Tensor, atac_query: torch.Tensor):
-
         # Query genes and cell properties
         # Decoder out will contain the latent for both genes and cell properties, concatenated together
         decoder_out, _ = self.decoder_cross_attn(
@@ -188,7 +185,6 @@ class ATACDecoder(nn.Module):
         return atac_pred
 
 
-
 class ContrastiveGatedMLP(nn.Module):
 
     # seq_dim: Dimension of gene representations.
@@ -200,18 +196,17 @@ class ContrastiveGatedMLP(nn.Module):
     # dropout: Value of ProcessSelfAttention dropout.
 
     def __init__(
-        self,
-        seq_len: int,
-        seq_dim: int,
-        query_len: int,
-        query_dim: int,
-        n_heads: int,
-        n_layers: int,
-        cell_properties: Optional[Dict[str, Any]] = None,
-        dropout: float = 0.0,  # for the process attention module
-        **kwargs,
+            self,
+            seq_len: int,
+            seq_dim: int,
+            query_len: int,
+            query_dim: int,
+            n_heads: int,
+            n_layers: int,
+            cell_properties: Optional[Dict[str, Any]] = None,
+            dropout: float = 0.0,  # for the process attention module
+            **kwargs,
     ):
-
         super().__init__()
 
         self.seq_len = seq_len
@@ -243,19 +238,17 @@ class ContrastiveGatedMLP(nn.Module):
         self._cell_predict = SimpleDecoder(seq_dim, cell_properties)
 
     def encoder_attn_step(
-        self,
-        key_vals: torch.Tensor,
-        input_query: torch.Tensor,
-        key_padding_mask: Optional[torch.Tensor] = None,
+            self,
+            key_vals: torch.Tensor,
+            input_query: torch.Tensor,
+            key_padding_mask: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-
         latent, encoder_weights = self.encoder_cross_attn(
             input_query, key_vals, key_padding_mask
         )
         return latent, encoder_weights
 
     def _create_gene_embeddings(self):
-
         self.gene_emb = nn.Embedding(self.seq_len + 1, self.seq_dim, padding_idx=self.seq_len)
         self.gene_val_w = nn.Embedding(self.seq_len + 1, 1, padding_idx=self.seq_len)
         self.gene_val_b = nn.Embedding(self.seq_len + 1, 1, padding_idx=self.seq_len)
@@ -264,28 +257,25 @@ class ContrastiveGatedMLP(nn.Module):
         torch.nn.init.zeros_(self.gene_val_b.weight)
 
     def _gene_embedding(
-        self,
-        gene_ids: torch.Tensor,
-        gene_vals: torch.Tensor,
+            self,
+            gene_ids: torch.Tensor,
+            gene_vals: torch.Tensor,
     ) -> torch.Tensor:
-
         gene_emb = self.gene_emb(gene_ids)
-        vals = gene_vals.unsqueeze(2) * self.gene_val_w(gene_ids) +  self.gene_val_b(gene_ids)
+        vals = gene_vals.unsqueeze(2) * self.gene_val_w(gene_ids) + self.gene_val_b(gene_ids)
         return vals * gene_emb
 
     def forward(
-        self,
-        gene_ids: List[torch.Tensor],
-        gene_vals: List[torch.Tensor],
-        key_padding_mask: List[torch.Tensor],
-        n_views: int,
+            self,
+            gene_ids: List[torch.Tensor],
+            gene_vals: List[torch.Tensor],
+            key_padding_mask: List[torch.Tensor],
+            n_views: int,
     ):
-
         z = []
         cell_pred = []
 
         for n in range(n_views):
-
             input_query = self.query_emb.repeat(len(gene_ids[n]), 1, 1)
             key_vals = self._gene_embedding(gene_ids[n], gene_vals[n])
             # Main calculation of latent variables
@@ -297,9 +287,7 @@ class ContrastiveGatedMLP(nn.Module):
             cell_pred.append(self._cell_predict(h.detach()))
             z.append(self.mlp(h))
 
-
         return z, cell_pred
-
 
 
 class GatedMLP(nn.Module):
@@ -313,23 +301,23 @@ class GatedMLP(nn.Module):
     # dropout: Value of ProcessSelfAttention dropout.
 
     def __init__(
-        self,
-        seq_len: int,
-        seq_dim: int,
-        query_len: int,
-        query_dim: int,
-        n_heads: int,
-        n_layers: int,
-        dropout: float = 0.0,  # for the process attention module
-        embedding_strategy: Literal["binned", "continuous", "continuous"] = "continuous",
-        linear_embedding: bool = False,
-        n_bins: Optional[int] = None,
-        cell_properties: Optional[Dict[str, Any]] = None,
-        RDA: bool = False,
-        second_layer_RDA: bool = False,
-        loss: Literal["MSE", "ZINB"] = "MSE",
-        output_pi: bool = False, # only needed in loss == ZINB
-        **kwargs,
+            self,
+            seq_len: int,
+            seq_dim: int,
+            query_len: int,
+            query_dim: int,
+            n_heads: int,
+            n_layers: int,
+            dropout: float = 0.0,  # for the process attention module
+            embedding_strategy: Literal["binned", "continuous", "continuous"] = "continuous",
+            linear_embedding: bool = False,
+            n_bins: Optional[int] = None,
+            cell_properties: Optional[Dict[str, Any]] = None,
+            RDA: bool = False,
+            second_layer_RDA: bool = False,
+            loss: Literal["MSE", "ZINB"] = "MSE",
+            output_pi: bool = False,  # only needed in loss == ZINB
+            **kwargs,
     ):
 
         super().__init__()
@@ -403,13 +391,11 @@ class GatedMLP(nn.Module):
                     hidden_layers=1,
                 )
 
-
-
     def encoder_attn_step(
-        self,
-        key_vals: torch.Tensor,
-        input_query: torch.Tensor,
-        key_padding_mask: Optional[torch.Tensor] = None,
+            self,
+            key_vals: torch.Tensor,
+            input_query: torch.Tensor,
+            key_padding_mask: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
 
         latent, encoder_weights = self.encoder_cross_attn(
@@ -487,12 +473,12 @@ class GatedMLP(nn.Module):
         return self.pi(gene_target_ids) if self.loss == "ZINB" else None
 
     def forward(
-        self,
-        gene_ids: torch.Tensor,
-        gene_target_ids: torch.Tensor,
-        gene_vals: torch.Tensor,
-        key_padding_mask: Optional[torch.Tensor] = None,
-        depths: Optional[torch.Tensor] = None,
+            self,
+            gene_ids: torch.Tensor,
+            gene_target_ids: torch.Tensor,
+            gene_vals: torch.Tensor,
+            key_padding_mask: Optional[torch.Tensor] = None,
+            depths: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
 
         key_padding_mask = None
@@ -512,17 +498,27 @@ class GatedMLP(nn.Module):
         latent = self.gmlp(latent)
         gene_pred = self.decoder(latent, gene_query)
 
+        if self.loss == "ZINB" and not self.output_pi:
+            query = self.theta_pi_cell_emb.repeat(len(gene_ids), 1, 1).to(latent.device)
+            out = self.decoder_theta_pi(latent, query)
+            theta_gene = self.output_theta_emb(gene_target_ids)
+            theta = out[..., 0] + theta_gene[..., 0]
+            pi_gene = self.output_pi_emb(gene_target_ids)
+            pi = out[..., 1] + pi_gene[..., 0]
+            zinb_out = (theta, pi)
+        else:
+            zinb_out = None
+
         if self.cell_properties is not None:
             feature_pred = {}
             for k in self.cell_properties.keys():
-
                 query = self.feature_emb[k].repeat(len(gene_ids), 1, 1).to(latent.device)
                 feature_pred[k] = self.feature_decoder[k](latent, query)
 
         else:
             feature_pred = None
 
-        return gene_pred, latent, feature_pred
+        return gene_pred, latent, feature_pred, zinb_out
 
     @staticmethod
     def sample_zinb(mu, theta, pi, eps=1e-8):
@@ -547,16 +543,16 @@ class GatedMLP(nn.Module):
         # Apply dropout mask
         return dropout_mask * nb_sample
 
-
     def generate_samples(
-        self,
-        gene_ids: torch.Tensor,
-        gene_target_ids: torch.Tensor,
-        gene_vals: torch.Tensor,
-        depths: Optional[torch.Tensor] = None,
+            self,
+            gene_ids: torch.Tensor,
+            gene_target_ids: torch.Tensor,
+            gene_vals: torch.Tensor,
+            depths: Optional[torch.Tensor] = None,
+            pi_pred: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
 
-        gene_pred, latent, _ = self.forward(
+        gene_pred, latent, _, zinb_out = self.forward(
             gene_ids, gene_target_ids, gene_vals, None, depths,
         )
 
@@ -564,25 +560,25 @@ class GatedMLP(nn.Module):
             if self.output_pi:
                 theta_gene = self.output_theta_emb(gene_target_ids)
                 theta = theta_gene[..., 0].to(torch.float32)
-                pi = gene_pred[..., 1].to(torch.float32)
+                if pi_pred is None:
+                    pi = gene_pred[..., 1].to(torch.float32)
+                else:
+                    pi = copy.deepcopy(pi_pred)
 
             else:
-                query = self.theta_pi_cell_emb.repeat(len(gene_ids), 1, 1).to(latent.device)
-                theta_pi_cell_pred = self.decoder_theta_pi(latent, query)
-                theta_gene = self.output_theta_emb(gene_target_ids)
-                theta = (theta_pi_cell_pred[..., 0] + theta_gene[..., 0]).to(torch.float32)
-                pi_gene = self.output_pi_emb(gene_target_ids)
-                pi = (theta_pi_cell_pred[..., 1] + pi_gene[..., 0]).to(torch.float32)
-                #print("AAA", theta_pi_cell_pred[..., 1])
-                #print("BBB", pi)
+                theta = zinb_out[0].to(torch.float32)
+                if pi_pred is None:
+                    pi = zinb_out[1].to(torch.float32)
+                else:
+                    pi = copy.deepcopy(pi_pred)
 
             mu = gene_pred[..., 0].to(torch.float32)
+            print("MU", mu.mean(), " PI", pi.mean())
             samples = self.sample_zinb(mu, theta, pi)
-            return samples
+            return samples, pi
 
         else:
             return gene_pred
-
 
 
 class Exceiver_atacseq(nn.Module):
@@ -596,20 +592,20 @@ class Exceiver_atacseq(nn.Module):
     # dropout: Value of ProcessSelfAttention dropout.
 
     def __init__(
-        self,
-        seq_len: int,
-        seq_dim: int,
-        query_len: int,
-        query_dim: int,
-        n_layers: int,
-        n_heads: int,
-        dim_feedforward: int,
-        n_chr: int = 23,
-        dropout: float = 0.0,  # for the process attention module
-        n_bins: Optional[int] = None,
-        n_emb_per_chr: int = 4000,
-        predict_atac: bool = False,
-        **kwargs,
+            self,
+            seq_len: int,
+            seq_dim: int,
+            query_len: int,
+            query_dim: int,
+            n_layers: int,
+            n_heads: int,
+            dim_feedforward: int,
+            n_chr: int = 23,
+            dropout: float = 0.0,  # for the process attention module
+            n_bins: Optional[int] = None,
+            n_emb_per_chr: int = 4000,
+            predict_atac: bool = False,
+            **kwargs,
     ):
 
         super().__init__()
@@ -668,13 +664,13 @@ class Exceiver_atacseq(nn.Module):
 
     def _create_atac_embeddings(self):
 
-        #self.chr_emb = nn.Embedding(self.n_chr + 1, self.seq_dim, padding_idx=self.n_chr)
-        #self.pos_emb = PosEmbeddingSinuosidal(self.seq_dim)
-        #self.pos_emb = RadialBasisEmbeddingChr(
+        # self.chr_emb = nn.Embedding(self.n_chr + 1, self.seq_dim, padding_idx=self.n_chr)
+        # self.pos_emb = PosEmbeddingSinuosidal(self.seq_dim)
+        # self.pos_emb = RadialBasisEmbeddingChr(
         #    23, self.seq_dim, n_emb_per_chr=self.n_emb_per_chr,
-        #)
-        #n = self.n_chr * self.n_emb_per_chr + 2
-        #self.pos_emb = nn.Embedding(n, self.seq_dim, padding_idx=n - 1)
+        # )
+        # n = self.n_chr * self.n_emb_per_chr + 2
+        # self.pos_emb = nn.Embedding(n, self.seq_dim, padding_idx=n - 1)
         self.atac_emb = nn.Parameter(torch.randn(1, 1, self.seq_dim))
 
         """
@@ -687,7 +683,7 @@ class Exceiver_atacseq(nn.Module):
             nn.Conv1d(8, 8, 7, stride=2),
             nn.Flatten(start_dim=1),
         ])
-        
+
         n_out = 216
 
         self.linear =  nn.Sequential(*[
@@ -696,7 +692,7 @@ class Exceiver_atacseq(nn.Module):
             nn.Linear(self.seq_dim, self.seq_dim),
         ])
         """
-        #self.linear = nn.Linear(256 // 4, 1)
+        # self.linear = nn.Linear(256 // 4, 1)
 
         self.max_pool = nn.Sequential(*[
             nn.Flatten(start_dim=0, end_dim=1),
@@ -709,12 +705,11 @@ class Exceiver_atacseq(nn.Module):
         self.W = nn.Parameter(torch.ones(self.seq_len, n))
         self.b = nn.Parameter(torch.zeros(self.seq_len, 1))
 
-
     def _target_embedding(self, gene_ids: torch.Tensor) -> torch.Tensor:
 
         return self.gene_emb(gene_ids)
 
-    def _gene_embedding(self,gene_ids: torch.Tensor,gene_vals: torch.Tensor) -> torch.Tensor:
+    def _gene_embedding(self, gene_ids: torch.Tensor, gene_vals: torch.Tensor) -> torch.Tensor:
 
         if self.n_bins is not None:
             return self.gene_emb(gene_ids) + self.gene_bin_emb(gene_vals.to(torch.long))
@@ -724,51 +719,49 @@ class Exceiver_atacseq(nn.Module):
             return vals * gene_emb
 
     def _atac_embedding(
-        self,
-        atac_gene_based: torch.Tensor,
-        gene_emb: torch.Tensor,
-        gene_target_ids: torch.Tensor,
+            self,
+            atac_gene_based: torch.Tensor,
+            gene_emb: torch.Tensor,
+            gene_target_ids: torch.Tensor,
     ) -> torch.Tensor:
 
         batch_size = atac_gene_based.shape[0]
         # return self.pos_emb(atac_chr, atac_pos)
         # return self.gene_emb(atac_chr) + self.pos_emb(atac_pos)
-        #return self.pos_emb(atac_pos_abs)
+        # return self.pos_emb(atac_pos_abs)
 
-        #print("D", atac_gene_based.shape)
-        #y = self.conv_layer(atac_gene_based)
+        # print("D", atac_gene_based.shape)
+        # y = self.conv_layer(atac_gene_based)
         # print("A", y.shape)
-        #y = y.reshape(batch_size, -1, 216)
-        #print("A1", y.shape)
-        #print("B", gene_emb.shape)
+        # y = y.reshape(batch_size, -1, 216)
+        # print("A1", y.shape)
+        # print("B", gene_emb.shape)
 
         y = self.max_pool(atac_gene_based)
         y = y.reshape(batch_size, -1, 128 // 2 - 1)
-        #y = self.linear(y)
-        #y = self.linear(torch.squeeze(atac_gene_based))
+        # y = self.linear(y)
+        # y = self.linear(torch.squeeze(atac_gene_based))
 
         alpha = torch.sum(self.W[gene_target_ids] * y, dim=-1, keepdim=True) + self.b[gene_target_ids]
 
         emb = alpha * gene_emb
 
-        #print("C", emb.shape)
-        #atac_gene_based = torch.squeeze(atac_gene_based)
+        # print("C", emb.shape)
+        # atac_gene_based = torch.squeeze(atac_gene_based)
         # y = torch.cat((y, emb), dim=-1)
         return emb
 
-
-
     def forward(
-        self,
-        #atac_chr: torch.Tensor,
-        #atac_pos: torch.Tensor,
-        #atac_pos_abs: torch.Tensor,
-        atac_gene_based: torch.Tensor,
-        gene_ids: torch.Tensor,
-        gene_vals: torch.Tensor,
-        gene_target_ids: torch.Tensor,
-        key_padding_mask_atac: Optional[torch.Tensor] = None,
-        key_padding_mask_genes: Optional[torch.Tensor] = None,
+            self,
+            # atac_chr: torch.Tensor,
+            # atac_pos: torch.Tensor,
+            # atac_pos_abs: torch.Tensor,
+            atac_gene_based: torch.Tensor,
+            gene_ids: torch.Tensor,
+            gene_vals: torch.Tensor,
+            gene_target_ids: torch.Tensor,
+            key_padding_mask_atac: Optional[torch.Tensor] = None,
+            key_padding_mask_genes: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
 
         batch_size = len(gene_ids)
@@ -779,14 +772,13 @@ class Exceiver_atacseq(nn.Module):
 
         # atac_key_vals = self._atac_embedding(atac_chr, atac_pos)
         # gene query and atac_gene_based vals come from same genes
-        #atac_key_vals = self._atac_embedding(atac_gene_based, gene_query, gene_target_ids)
+        # atac_key_vals = self._atac_embedding(atac_gene_based, gene_query, gene_target_ids)
 
-        #key_padding_mask = torch.cat((key_padding_mask_atac, key_padding_mask_genes), dim=1)
-        #key_vals = torch.cat((atac_key_vals, gene_key_vals), dim=1)
+        # key_padding_mask = torch.cat((key_padding_mask_atac, key_padding_mask_genes), dim=1)
+        # key_vals = torch.cat((atac_key_vals, gene_key_vals), dim=1)
 
         key_padding_mask = key_padding_mask_genes
         key_vals = gene_key_vals
-
 
         # Main calculation of latent variables
         latent, encoder_weights = self.encoder_attn_step(
@@ -833,7 +825,6 @@ class RadialBasisEmbeddingChr(nn.Module):
             torch.randn(n_chromosomes, n_emb_per_chr, embedding_dim, dtype=dtype),
         )
 
-
         centers = np.linspace(0, 1, n_emb_per_chr)[None, :]
         centers = np.tile(centers, (n_chromosomes, 1))
 
@@ -848,30 +839,29 @@ class RadialBasisEmbeddingChr(nn.Module):
         )
 
     def forward(self, chromosome, position):
-
         weighted_embedding = []
         batch_size = position.shape[0]
 
-        #print("SS", self.log_variances.shape)
-        #print("SSSS", self.log_variances[:, 0, :].shape)
+        # print("SS", self.log_variances.shape)
+        # print("SSSS", self.log_variances[:, 0, :].shape)
 
         for ch in range(23):
-
             pos = position[:, ch, :].unsqueeze(-1)
             variances = torch.exp(self.log_variances[:, :, ch, :]).to(position.device)
             centers = self.centers[:, :, ch, :].to(position.device)
 
-            #print("A", pos.shape, centers.shape, variances.shape, centers.shape)
+            # print("A", pos.shape, centers.shape, variances.shape, centers.shape)
             weights = torch.exp(-((pos - centers) ** 2) / (2 * variances))
             weights = F.softmax(weights, dim=-1)
-            #print("B", weights.shape, self.embeddings[ch, ...].shape)
+            # print("B", weights.shape, self.embeddings[ch, ...].shape)
 
             weighted_embedding.append(weights @ self.embeddings[ch, ...])
 
-        weighted_embedding = torch.stack(weighted_embedding, 1).reshape(batch_size, -1, self.embedding_dim )
-        #print("weighted_embedding", weighted_embedding.shape)
+        weighted_embedding = torch.stack(weighted_embedding, 1).reshape(batch_size, -1, self.embedding_dim)
+        # print("weighted_embedding", weighted_embedding.shape)
 
         return weighted_embedding
+
 
 class RadialBasisEmbedding(nn.Module):
 
@@ -899,21 +889,20 @@ class RadialBasisEmbedding(nn.Module):
         ).view(1, 1, -1)
 
     def forward(self, chromosome, position):
-
         position = position + chromosome * self.chr_jump
         position = position[..., None]
         variances = torch.exp(self.log_variances).to(position.device)
         self.centers = self.centers.to(position.device)
 
         weights = torch.exp(-((position - self.centers) ** 2) / (2 * variances))
-        weight_topk,  indices = torch.topk(weights, k=10, dim=-1)
+        weight_topk, indices = torch.topk(weights, k=10, dim=-1)
         weight_topk = weight_topk / weight_topk.sum(dim=-1, keepdim=True)
 
         print("A", self.embeddings.shape, indices.shape)
         embeddings = torch.gather(self.embeddings, -1, indices)
 
-        #weighted_embedding = (weights * self.embeddings).sum(dim=0)
-        #weighted_embedding = weights @ self.embeddings
+        # weighted_embedding = (weights * self.embeddings).sum(dim=0)
+        # weighted_embedding = weights @ self.embeddings
         weighted_embedding = weight_topk @ embeddings
 
         return weighted_embedding
@@ -957,7 +946,7 @@ class ATACSeqEmbedding(nn.Module):
         output_embeddings = torch.zeros(batch_size, self.embedding_dim, device=position.device)
 
         for i in range(batch_size):
-            #chr_idx = str(chromosome[i].item())
+            # chr_idx = str(chromosome[i].item())
             chr_idx = [str(int(c)) for c in chromosome[i].tolist()]
             pos = position[i].unsqueeze(0)  # Shape (1,1)
 
@@ -968,7 +957,6 @@ class ATACSeqEmbedding(nn.Module):
             # Compute RBF weights
             weights = torch.exp(-((pos - centers) ** 2) / (2 * variances))  # (n_emb_per_chr, 1)
             weights = weights / weights.sum()  # Normalize weights
-
 
             # Compute weighted sum
             weighted_embedding = (weights * self.embeddings).sum(dim=0)  # (embedding_dim,)
@@ -983,20 +971,19 @@ class ATACSeqEmbedding(nn.Module):
 class PosEmbeddingSinuosidal(nn.Module):
 
     def __init__(self, d_model, scale_factor: float = 5000.0):
-
         super().__init__()
         self.d_model = d_model
-        self.scale_factor = scale_factor # position inputs range from 0 to 1, multiply by scale factor work well
+        self.scale_factor = scale_factor  # position inputs range from 0 to 1, multiply by scale factor work well
         self.div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(5_000.0) / d_model))
         self.div_term = self.div_term[None, None, :]
 
     def forward(self, pos):
-
         y = torch.zeros((*pos.shape, self.d_model), dtype=torch.float32).to(pos.device)
         pos = pos * self.scale_factor
         y[:, :, ::2] = torch.cos(pos[:, :, None] * self.div_term.to(pos.device))
         y[:, :, 1::2] = torch.sin(pos[:, :, None] * self.div_term.to(pos.device))
         return y
+
 
 class PosEmbedding(nn.Module):
 
@@ -1006,20 +993,18 @@ class PosEmbedding(nn.Module):
         self.emb = nn.Embedding(max_len + 1, d_model, padding_idx=max_len)
 
     def forward(self, pos):
-
-        #pos0 = torch.clip(pos-2, 0, self.max_len)
-        pos1 = torch.clip(pos-1, 0, self.max_len)
+        # pos0 = torch.clip(pos-2, 0, self.max_len)
+        pos1 = torch.clip(pos - 1, 0, self.max_len)
         pos2 = torch.clip(pos, 0, self.max_len)
-        pos3 = torch.clip(pos+1, 0, self.max_len)
-        #pos4 = torch.clip(pos+2, 0, self.max_len)
+        pos3 = torch.clip(pos + 1, 0, self.max_len)
+        # pos4 = torch.clip(pos+2, 0, self.max_len)
 
-        y =  0.5 * self.emb(pos1) + self.emb(pos2) + 0.5 * self.emb(pos3)
+        y = 0.5 * self.emb(pos1) + self.emb(pos2) + 0.5 * self.emb(pos3)
 
         return y
 
 
 def load_model(model_save_path, model):
-
     params_loaded = []
     non_network_params = []
     state_dict = {}

@@ -29,7 +29,7 @@ class SingleCellDataset(Dataset):
         batch_size: int = 32,
         normalize_total: bool = False,
         log_normalize: bool = True,
-        random_scaling: bool = True,
+        random_scaling: bool = False,
         cell_prop_same_ids: bool = False,
         max_cell_prop_val: float = 999,
         protein_coding_only: bool = False,
@@ -234,6 +234,7 @@ class SingleCellDataset(Dataset):
         for n, i in enumerate(batch_idx):
 
             j = i if self.cell_idx is None else self.cell_idx[i]
+
             raw_gene_vals = np.memmap(
                 self.data_path, dtype='uint8', mode='r', shape=(self.n_genes_original,), offset=j * self.offset
             )[self.gene_idx].astype(np.float32)
