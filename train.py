@@ -5,7 +5,7 @@ import numpy as np
 import pytorch_lightning as pl
 from pytorch_lightning.strategies.ddp import DDPStrategy
 from datasets import DataModule
-from networks import Exceiver, GatedMLP, load_model
+from networks import Exceiver, GatedMLP, EncoderDecoderNetwork, load_model
 from tasks import MSELoss, AdverserialLoss
 from config_immune import dataset_cfg, task_cfg, model_cfg, trainer_cfg
 import warnings
@@ -57,14 +57,14 @@ def main(train_idx, test_idx):
 
     # Create network
     # model = Exceiver(**model_cfg)
-    model = GatedMLP(**model_cfg)
+    #model = GatedMLP(**model_cfg)
+    model = EncoderDecoderNetwork(**model_cfg)
 
     if model_cfg["model_save_path"] is not None:
         model = load_model(model_cfg["model_save_path"], model)
 
     for n, p in model.named_parameters():
-        if "query" in n:
-            print(n, p.size())
+        print(n, p.size())
 
     task = MSELoss(network=model, task_cfg=task_cfg)
 

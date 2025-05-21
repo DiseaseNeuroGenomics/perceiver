@@ -65,7 +65,7 @@ def main(train_idx, test_idx, perturb_genes):
         model = load_model(model_cfg["model_save_path"], model)
 
     #for n, p in model.named_parameters():
-    #    print(n, p.size())
+    #    print(n, p.size(), torch.abs(p).mean())
 
     task = RecursiveInference(network=model, task_cfg=task_cfg)
 
@@ -79,7 +79,7 @@ def main(train_idx, test_idx, perturb_genes):
         precision=trainer_cfg["precision"],
         strategy=DDPStrategy(find_unused_parameters=True) if trainer_cfg["n_devices"] > 1 else "auto",
         val_check_interval=1,
-        limit_val_batches=50,
+        limit_val_batches=200,
     )
 
     trainer.fit(task, dm)
