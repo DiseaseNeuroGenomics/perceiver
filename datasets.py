@@ -39,7 +39,7 @@ class SingleCellDataset(Dataset):
         n_genes_per_input: int = 400,
         cell_restrictions: Optional[Dict[str, Any]] = None,
         RDA: bool = False, # read-depth-aware, from scFoundation
-        decode_from_non_masked_genes: bool = True,
+        masked_gene_selection: Literal["BERT", "exclusive", "non_exclusive"] = "BERT",
         exclude_gene_val: int = 255,
         training: bool = True,
     ):
@@ -76,7 +76,7 @@ class SingleCellDataset(Dataset):
         self.remove_sex_chrom = remove_sex_chrom
         self.n_genes_per_input = n_genes_per_input
         self.RDA = RDA
-        self.decode_from_non_masked_genes = decode_from_non_masked_genes
+        self.masked_gene_selection = masked_gene_selection
         self.exclude_gene_val = exclude_gene_val
         self.training = training
 
@@ -301,7 +301,6 @@ class SingleCellDataset(Dataset):
         return new_gene_vals, depths
 
 
-
     def _prepare_data(self, batch_idx):
 
         # get input and target data, returned as numpy arrays
@@ -312,6 +311,7 @@ class SingleCellDataset(Dataset):
             cell_prop_vals, cell_prop_mask = None, None
 
         return input_gene_vals, target_gene_vals, include_gene_mask, depths, cell_prop_vals, cell_prop_mask
+
 
     def __getitem__(self, batch_idx: Union[int, List[int]]):
 
@@ -324,7 +324,7 @@ class SingleCellDataset(Dataset):
             raise ValueError("Index length not equal to batch_size")
 
         if self.training:
-            n_genes_batch = np.random.choice(np.arange(self.n_input // 5, self.n_input))
+            n_genes_batch = np.random.choice(np.arange(self.n_input // 4, self.n_input))
         else:
             n_genes_batch = self.n_input
 
@@ -341,44 +341,77 @@ class SingleCellDataset(Dataset):
         # initialize gene ids ids at padding value
 
         non_masked_genes = np.sort(np.where(np.sum(include_gene_mask, axis=0) > 0)[0])
-        n_targets = len(non_masked_genes) if self.n_targets is None else self.n_targets
+        if self.masked_gene_selection == "BERT":
+            n_targets = n_genes_batch
+        else:
+            n_targets = len(non_masked_genes) if self.n_targets is None else self.n_targets
 
         gene_ids = self.n_genes * np.ones((self.batch_size, n_genes_batch), dtype=np.int64)
         gene_vals = np.zeros((self.batch_size, n_genes_batch), dtype=np.float32)
         gene_target_ids = np.zeros((self.batch_size, n_targets), dtype=np.int64)
         gene_target_vals = np.zeros((self.batch_size, n_targets), dtype=np.float32)
+        target_mask = np.ones((self.batch_size, n_targets), dtype=np.float32) # 1 = include, 0 = exclude
 
         #n_input = n_genes_batch if not self.RDA else n_genes_batch # + 2  TODO: FIX THIS
-        #padding_mask = np.zeros((self.batch_size, n_genes_batch), dtype=np.float32)
+        padding_mask = np.zeros((self.batch_size, n_genes_batch), dtype=np.float32)
 
         for n in range(self.batch_size):
 
             possible_input_genes = np.where(include_gene_mask[n, :])[0]
-            input_idx = np.random.choice(possible_input_genes, n_genes_batch, replace=False)
 
-            gene_ids[n, :] = input_idx
-            gene_vals[n, :] = pre_input_gene_vals[n, input_idx]
+            if self.masked_gene_selection == "BERT":
+                p_mask = 0.15
+                N = np.minimum(len(possible_input_genes), n_genes_batch)
+                input_idx = np.random.choice(possible_input_genes, N, replace=False)
+                gene_ids[n, :N] = gene_target_ids[n, :N] = input_idx
+                gene_vals[n, :N] = gene_target_vals[n, :N] = pre_input_gene_vals[n, input_idx]
 
-            if self.decode_from_non_masked_genes:
-                remainder_idx = possible_input_genes
+                masked_out_genes = np.random.choice(n_genes_batch, int(N * p_mask), replace=False)
+                padding_mask[n, masked_out_genes] = 1
+
+                if N < n_genes_batch:
+                    gene_ids[n, N:] = gene_target_ids[n, N:] = self.n_genes
+                    gene_vals[n, N:] = gene_target_vals[n, N:] = 0
+                    padding_mask[n, N:] = 1
+                    target_mask[n, N:] = 0.0
+
+
             else:
-                remainder_idx = list(set(possible_input_genes) - set(input_idx))
 
-            if self.n_targets is None:
-                target_idx = non_masked_genes
-            else:
-                replace = False if n_targets <= len(remainder_idx) else True
-                target_idx = np.random.choice(remainder_idx, n_targets, replace=replace)
+                if self.n_targets is None:
+                    target_idx = non_masked_genes
+                else:
+                    replace = False if n_targets <= len(possible_input_genes) else True
+                    target_idx = np.random.choice(possible_input_genes, n_targets, replace=replace)
 
-            gene_target_vals[n, :] = pre_target_gene_vals[n, target_idx]
-            gene_target_ids[n, :] = target_idx
+                gene_target_vals[n, :] = pre_target_gene_vals[n, target_idx]
+                gene_target_ids[n, :] = target_idx
+
+                if self.masked_gene_selection == "exclusive":
+                    remainder_idx = list(set(possible_input_genes) - set(target_idx))
+                elif self.masked_gene_selection == "non_exclusive":
+                    remainder_idx = possible_input_genes
+
+                if n_genes_batch <= len(remainder_idx):
+                    input_idx = np.random.choice(remainder_idx, n_genes_batch, replace=False)
+                    gene_ids[n, :] = input_idx
+                    gene_vals[n, :] = pre_input_gene_vals[n, input_idx]
+                else:
+                    n_remain = len(remainder_idx)
+                    gene_ids[n, :n_remain] = remainder_idx
+                    gene_vals[n, :n_remain] = pre_input_gene_vals[n, remainder_idx]
+
+                    gene_ids[n, n_remain:] = self.n_genes
+                    gene_vals[n, n_remain:] = 0.0
+
 
         batch = (
             gene_ids,
             gene_target_ids,
             gene_vals,
             gene_target_vals,
-            #padding_mask,
+            padding_mask,
+            target_mask,
             depths,
             cell_prop_vals,
             cell_prop_mask,
@@ -415,6 +448,7 @@ class DataModule(pl.LightningDataModule):
         embedding_strategy: Literal["binned", "continuous", "film"] = "continuous",
         RDA: bool = False,
         cell_restrictions: Optional[Dict[str, Any]] = None,
+        masked_gene_selection: Literal["BERT", "exclusive", "non_exclusive"] = "BERT",
     ):
         super().__init__()
         self.data_path = data_path
@@ -433,6 +467,7 @@ class DataModule(pl.LightningDataModule):
         self.n_bins = n_bins
         self.RDA = RDA
         self.cell_restrictions = cell_restrictions
+        self.masked_gene_selection = masked_gene_selection
 
         self._get_cell_prop_info()
 
@@ -508,6 +543,7 @@ class DataModule(pl.LightningDataModule):
             protein_coding_only=self.protein_coding_only,
             remove_sex_chrom=self.remove_sex_chrom,
             cell_restrictions=self.cell_restrictions,
+            masked_gene_selection=self.masked_gene_selection,
             RDA=self.RDA,
             training=True,
             n_genes_per_input=4_000,
@@ -526,6 +562,7 @@ class DataModule(pl.LightningDataModule):
             protein_coding_only=self.protein_coding_only,
             remove_sex_chrom=self.remove_sex_chrom,
             cell_restrictions=self.cell_restrictions,
+            masked_gene_selection=self.masked_gene_selection,
             RDA=self.RDA,
             training=False,
             n_genes_per_input=4_000,
