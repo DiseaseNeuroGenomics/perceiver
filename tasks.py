@@ -36,20 +36,24 @@ class BaseTask(pl.LightningModule):
 
     def _copy_source_code(self):
 
-        target_dir = f"{self.trainer.log_dir}/code"
-        os.mkdir(target_dir)
-        base_dir = os.getcwd()
-        print(f"Base dir: {base_dir}")
-        src_files = [
-            f"{base_dir}/config.py",
-            f"{base_dir}/config_tf.py",
-            f"{base_dir}/datasets.py",
-            f"{base_dir}/networks.py",
-            f"{base_dir}/tasks.py",
-            f"{base_dir}/train.py",
-        ]
-        for src in src_files:
-            shutil.copyfile(src, f"{target_dir}/{os.path.basename(src)}")
+        try:
+            target_dir = f"{self.trainer.log_dir}/code"
+            os.mkdir(target_dir)
+            base_dir = os.getcwd()
+            print(f"Base dir: {base_dir}")
+            src_files = [
+                f"{base_dir}/config.py",
+                f"{base_dir}/config_tf.py",
+                f"{base_dir}/datasets.py",
+                f"{base_dir}/networks.py",
+                f"{base_dir}/modules.py",
+                f"{base_dir}/tasks.py",
+                f"{base_dir}/train.py",
+            ]
+            for src in src_files:
+                shutil.copyfile(src, f"{target_dir}/{os.path.basename(src)}")
+        except:
+            return
 
     def training_step(self, batch, batch_idx):
 
@@ -124,7 +128,7 @@ class RecursiveInference(BaseTask):
         # self._load_gene_perturb_info()
         self._create_results_dict()
         self.source_code_copied = False
-        self.iterations_per_gene = 25
+        self.iterations_per_gene = 50
 
     def _load_gene_perturb_info(self):
         self.gene_perturb = self.task_cfg["gene_perturb"]
@@ -194,9 +198,9 @@ class RecursiveInference(BaseTask):
             for k in range(50):
                 self.pred_exp[k] = []
 
-    def validation_step(self, batch, batch_idx):
+    def validation_stepX(self, batch, batch_idx):
 
-        n_recursive_steps = 25
+        n_recursive_steps = 1
         n_genes = len(self.gene_names)
         self.validation_count += 1
 
@@ -214,71 +218,200 @@ class RecursiveInference(BaseTask):
             self.actual_exp = []
             self.pred_exp = {k: [] for k in range(n_recursive_steps)}
 
-        ## TEST
-        """
-        gene_ids, gene_target_ids, gene_vals, gene_targets, depths, _, _, cell_idx = batch
-        gene_pred_perturb, _, _ = self.network.forward(
-            gene_ids, gene_target_ids, gene_vals, None, depths,
-        )
-        print("cell", cell_idx)
-        print("D0", depths[:, 0].mean(), "D1", depths[:, 1].mean())
-        print("MU",gene_pred_perturb[..., 0].mean())
-        print("PI", gene_pred_perturb[..., 1].mean())
-        1/0
-        """
-
         batch, perturb_idx = self._subsample_batch(batch)
+
+        k = 0
+
         if batch is not None:  # happens where there are too few samples containing the gene to perturb
 
-            gene_ids, gene_target_ids, gene_vals, gene_targets, depths, cell_idx = batch
+            gene_ids, old_gene_target_ids, gene_vals, gene_targets, depths, cell_idx = batch
             batch_size, n_input_genes = gene_ids.shape
-            if self.task_cfg["perturb_knockdown"]:
-                perturb_gene_clamp_val = 0.0
-            else:
-                gene_val_counts = torch.exp(gene_vals[perturb_idx]) - 1
-                perturb_gene_clamp_val = torch.log(1 + gene_val_counts + self.task_cfg["perturb_val"])
 
             for i in range(batch_size):
                 vals = np.zeros(n_genes, dtype=np.float32)
-                gene_idx = gene_target_ids[i, :].detach().to(torch.int64).cpu().numpy()
+                gene_idx = old_gene_target_ids[i, :].detach().to(torch.int64).cpu().numpy()
                 vals[gene_idx] = gene_targets[i, :].detach().to(torch.float32).cpu().numpy()
                 self.actual_exp.append(vals)
 
             gene_target_ids = torch.tile(torch.arange(self.n_genes)[None, :], (batch_size, 1)).to(
-                gene_target_ids.device)
+                old_gene_target_ids.device)
 
-            # gene_vals_perturb = copy.deepcopy(gene_vals)
+            gene_pred, _, _, _ = self.network.forward(
+                gene_ids, gene_target_ids, gene_vals, None, depths,
+            )
+
+            if self.task_cfg["perturb_knockdown"]:
+                perturb_gene_original = gene_vals[perturb_idx]
+                perturb_gene_clamp_val = 0.0
+            else:
+                perturb_gene_clamp_val = gene_vals[perturb_idx] - 1
+
             gene_vals_perturb = gene_vals
-            # gene_vals_perturb[perturb_idx] = copy.deepcopy(perturb_gene_clamp_val)
-            gene_vals_perturb[perturb_idx] = perturb_gene_clamp_val
+            gene_vals_perturb[perturb_idx] = copy.deepcopy(perturb_gene_clamp_val)
 
-            pi_pred = None
+            gene_pred_perturb, _, _, _ = self.network.forward(
+                gene_ids, gene_target_ids, gene_vals_perturb, None, depths,
+            )
+
+            delta = gene_pred_perturb[:, :, 0] - gene_pred[:, :, 0]
+            #print("A", torch.abs(delta).mean())
+            new_gene_vals = gene_targets[:, :] + delta[:, self.all_possible_gene_idx]
+
+
+
+            ###################
+
+            #gene_pred = copy.deepcopy(gene_pred_perturb)
+            gene_vals = copy.deepcopy(new_gene_vals)
+            gene_vals_perturb = copy.deepcopy(new_gene_vals)
+            gene_ids = gene_target_ids[:, self.all_possible_gene_idx]
+            perturb_idx = torch.where(gene_ids == self.gene_perturb_idx)
+
+            gene_vals_perturb[perturb_idx] = copy.deepcopy(perturb_gene_clamp_val)
+
+            gene_pred, _, _, _ = self.network.forward(
+                gene_ids, gene_target_ids, gene_vals, None, depths,
+            )
+
+            gene_pred_perturb, _, _, _ = self.network.forward(
+                gene_ids, gene_target_ids, gene_vals_perturb, None, depths,
+            )
+
+            delta = gene_pred_perturb[:, :, 0] - gene_pred[:, :, 0]
+            #print("B", torch.abs(delta).mean())
+            new_gene_vals = gene_targets[:, :] + delta[:, self.all_possible_gene_idx]
+
+            ####
+
+            for i in range(batch_size):
+                vals = np.zeros(n_genes, dtype=np.float32)
+                vals[self.all_possible_gene_idx] = new_gene_vals[i, :].detach().to(torch.float32).cpu().numpy()
+                self.pred_exp[k].append(vals)
+
+        if self.validation_count % self.iterations_per_gene == self.iterations_per_gene - 1:
+
+            # save previous data
+            if len(self.actual_exp) > 0:
+                self.actual_exp = np.stack(self.actual_exp)
+
+                self.results["actual_exp"].append(np.mean(self.actual_exp, axis=0))
+                for k in range(n_recursive_steps):
+                    self.pred_exp[k] = np.stack(self.pred_exp[k])
+                    self.results["pred_exp"][k].append(np.mean(self.pred_exp[k], axis=0))
+                self.results["perturb_gene"].append(self.perturb_gene)
+                self.results["counts"].append(self.pred_exp[k].shape[0])
+
+    def validation_step(self, batch, batch_idx):
+
+        n_recursive_steps = 10
+        n_genes = len(self.gene_names)
+        self.validation_count += 1
+
+        if self.validation_count == 0:
+            self.all_possible_gene_idx = self._get_possible_gene_index(batch)
+            self.gene_position = {}
+            for i, n in enumerate(self.all_possible_gene_idx):
+                self.gene_position[n] = i
+
+        if self.validation_count % self.iterations_per_gene == 0:
+            self.perturb_gene_count += 1
+            self.perturb_gene = self.perturb_gene_list[self.perturb_gene_count]
+            self.gene_perturb_idx = np.where(np.array(self.gene_names) == self.perturb_gene)[0][0]
+            self.possible_gene_idx = list(set(self.all_possible_gene_idx) - set([self.gene_perturb_idx]))
+            self.actual_exp = []
+            self.pred_exp = {k: [] for k in range(n_recursive_steps)}
+
+
+        batch, perturb_idx = self._subsample_batch(batch)
+
+
+
+        if batch is not None:  # happens where there are too few samples containing the gene to perturb
+
+            gene_ids, old_gene_target_ids, gene_vals, gene_targets, depths, cell_idx = batch
+            batch_size, n_input_genes = gene_ids.shape
+
+
+            gene_target_ids = torch.tile(torch.arange(self.n_genes)[None, :], (batch_size, 1)).to(
+                old_gene_target_ids.device)
+
+            gene_pred, _, _, _ = self.network.forward(
+                gene_ids, gene_target_ids, gene_vals, None, depths,
+            )
+
+            #print("AAAA", gene_pred.shape, gene_vals.shape, gene_pred.mean(), gene_vals.mean())
+
+            prev_gene_pred = copy.deepcopy(gene_pred[..., 0])
+
+
+            if self.task_cfg["perturb_knockdown"]:
+                perturb_gene_original = gene_vals[perturb_idx]
+                perturb_gene_clamp_val = 0.0
+            else:
+                gene_val_counts = torch.exp(gene_vals[perturb_idx]) - 1
+
+                perturb_gene_clamp_val = torch.log(1 + gene_val_counts + self.task_cfg["perturb_val"])
+
+            # experimental, remove 1 count from the depths
+            depths = torch.log(torch.exp(depths) - 1)
+
+            prev_gene_vals = torch.zeros((batch_size, self.n_genes), dtype=torch.float32).to(gene_vals.device)
+            for i in range(batch_size):
+                vals = np.zeros(n_genes, dtype=np.float32)
+                gene_idx = old_gene_target_ids[i, :].detach().to(torch.int64).cpu().numpy()
+                vals[gene_idx] = gene_targets[i, :].detach().to(torch.float32).cpu().numpy()
+                prev_gene_vals[i, old_gene_target_ids[i, :]] = gene_targets[i, :]
+                self.actual_exp.append(vals)
+
+
+            gene_vals_perturb = gene_vals
+            gene_vals_perturb[perturb_idx] = copy.deepcopy(perturb_gene_clamp_val)
+
+            pi_pred = gene_pred[:, :, 1]
+            #print("INPUT", gene_targets.mean())
 
             for k in range(n_recursive_steps):
 
-                if self.task_cfg["loss"] == "ZINB":
+                if self.task_cfg["loss"] == "ZINB" or self.task_cfg["loss"] == "MSE":
 
-                    samples, pi = self.network.generate_samples(gene_ids, gene_target_ids, gene_vals_perturb, depths,
-                                                                pi_pred=pi_pred)
+
+                    samples, prev_gene_pred = self.network.generate_samples(
+                        gene_ids,
+                        gene_target_ids,
+                        gene_vals_perturb,
+                        depths,
+                        pi_pred=None,
+                        loss="ZINB",
+                        prev_gene_vals=prev_gene_vals,
+                        prev_gene_pred=prev_gene_pred,
+                    )
+
                     samples = torch.clamp(samples, min=0, max=254)
+                    prev_gene_vals = copy.deepcopy(samples)
 
-                    # print("HIGH", (samples > 254).to(torch.float32).sum())
+                    for i in range(batch_size):
+                        samples[i, gene_ids[i, :]] = torch.exp(copy.deepcopy(gene_vals_perturb[i, :])) - 1
+
                     gene_pred_perturb = torch.log(1 + samples).to(torch.float32)
-                    pi_pred = copy.deepcopy(pi)
+                    #gene_pred_perturb = copy.deepcopy(samples)
+                    #pi_pred = copy.deepcopy(pi)
+                    #print("mean samples", gene_pred_perturb.mean())
+                    depths = None
                     if depths is not None:
-                        depth = samples.sum(dim=1)
-                        depths[:, 0] = torch.log(1 + depth)
-                        depths[:, 1] = torch.log(1 + depth)
+                        depth = samples[:, self.all_possible_gene_idx].sum(dim=1)
+                        # depth = (torch.exp(samples[:, self.all_possible_gene_idx]) - 1).sum(dim=1)
+                        # depths[:, 0] = torch.log(1 + depth)
+                        # depths[:, 1] = torch.log(1 + depth)
 
                 else:
                     gene_pred_perturb = torch.clamp(gene_pred_perturb[..., 0].to(torch.float32), min=0.0)
 
-                # for i in range(batch_size):
-                #    gene_pred_perturb[i, gene_ids[i, :]] = copy.deepcopy(gene_vals_perturb[i, :])
+
 
                 # print("XX", gene_vals_perturb.shape, perturb_gene_clamp_val.shape)
                 gene_ids[:, 0] = self.gene_perturb_idx
                 gene_vals_perturb[:, 0] = copy.deepcopy(perturb_gene_clamp_val)
+
 
                 for i in range(batch_size):
                     idx_input = np.random.choice(self.possible_gene_idx, n_input_genes - 1, replace=False)
@@ -391,12 +524,22 @@ class AllToAllPerutbation(BaseTask):
         for n, p in self.network.named_parameters():
             p.requires_grad_(False)
 
+        self._load_tf_info() # not strictly needed
         self._create_results_dict()
+
+
+    def _load_tf_info(self):
+        self.tf_list = pd.read_csv(self.task_cfg["tf_list_fn"], header=None)[0].values
+        self.tf_list_idx = []
+        for tf in self.tf_list:
+            if tf in self.gene_names:
+                self.tf_list_idx.append(np.where(np.array(self.gene_names) == tf)[0][0])
 
     def _create_results_dict(self):
 
-        self.results = {"gene_names": self.gene_names}
+        self.results = {"gene_names": self.gene_names, "tf_list": self.tf_list}
         N = len(self.gene_names)
+
         self.results["pos_delta"] = np.zeros((N, N), dtype=np.float32)
         self.results["pos_var"] = np.zeros((N, N), dtype=np.float32)
         self.results["pos_count"] = np.zeros((N, N), dtype=np.uint16)
@@ -407,14 +550,14 @@ class AllToAllPerutbation(BaseTask):
 
     def validation_step(self, batch, batch_idx):
 
-        gene_ids, gene_target_ids, gene_vals, gene_targets, key_padding_mask, depths, _, _, _ = batch
+        gene_ids, gene_target_ids, gene_vals, gene_targets, depths, _, _ = batch
         batch_size = gene_ids.shape[0]
         n_iters = 10
 
         n_input_genes = gene_vals.shape[1]
 
-        gene_pred, _, _ = self.network.forward(
-            gene_ids, gene_target_ids, gene_vals, key_padding_mask, depths,
+        gene_pred, _, _, _ = self.network.forward(
+            gene_ids, gene_target_ids, gene_vals, None, depths,
         )
 
         target_idx = gene_target_ids.to(torch.int16).detach().cpu().numpy()
@@ -425,20 +568,20 @@ class AllToAllPerutbation(BaseTask):
             # rnd_inc = torch.from_numpy(np.random.choice([1, 2, 3], size=(batch_size,), replace=True)).to(gene_vals.device)
 
             gene_vals_perturb = copy.deepcopy(gene_vals.clone().detach())
-            gene_vals_perturb[:, rnd_idx[n]] = gene_vals_perturb[:, rnd_idx[n]] + 1
+            gene_vals_perturb[:, rnd_idx[n]] = torch.log(1 + torch.exp(gene_vals_perturb[:, rnd_idx[n]]))
             # TODO: add fix when binning inputs
             # gene_vals_perturb[:, rnd_idx[n]] = torch.clip(
             #    gene_vals_perturb[:, rnd_idx[n]] + rnd_inc, 0, self.n_bins-1
             # )
 
-            gene_pred_perturb, _, _ = self.network.forward(
-                gene_ids, gene_target_ids, gene_vals_perturb, key_padding_mask, depths,
+            gene_pred_perturb, _, _, _ = self.network.forward(
+                gene_ids, gene_target_ids, gene_vals_perturb, None, depths,
             )
 
             source_idx = gene_ids[:, rnd_idx[n]].to(torch.int16).detach().cpu().numpy()
             delta = gene_pred_perturb.to(torch.float32).detach().cpu().numpy() - gene_pred.to(
                 torch.float32).detach().cpu().numpy()
-            delta = delta[:, :, 0]
+            delta = delta[:, :, 1]
 
             for i in range(batch_size):
                 count = self.results["pos_count"][source_idx[i], target_idx[i]]
@@ -453,46 +596,120 @@ class AllToAllPerutbation(BaseTask):
 
                 current_var = prev_var + (delta[i, :] - prev_mean) * (delta[i, :] - current_mean)
                 self.results["pos_var"][source_idx[i], target_idx[i]] = current_var
-        """
+
+
+class TFoAllPerutbation(BaseTask):
+
+    def __init__(
+            self,
+            network,
+            task_cfg,
+            **kwargs
+    ):
+        # Initialize superclass
+        super().__init__(network, task_cfg)
+
+        for n, p in self.network.named_parameters():
+            p.requires_grad_(False)
+
+        self._load_tf_info()
+        self._create_results_dict()
+
+
+    def _load_tf_info(self):
+        self.tf_list = pd.read_csv(self.task_cfg["tf_list_fn"], header=None)[0].values
+        self.tf_list_idx = []
+        for tf in self.tf_list:
+            if tf in self.gene_names:
+                self.tf_list_idx.append(np.where(np.array(self.gene_names) == tf)[0][0])
+
+        print(f"Length of tf list: {len(self.tf_list_idx)}")
+
+    def _create_results_dict(self):
+
+        self.results = {"gene_names": self.gene_names, "tf_list": self.tf_list}
+        N = len(self.gene_names)
+        n_tfs = len(self.tf_list)
+        self.results["pos_delta"] = np.zeros((n_tfs, N), dtype=np.float32)
+        self.results["pos_var"] = np.zeros((n_tfs, N), dtype=np.float32)
+        self.results["pos_count"] = np.zeros((n_tfs, N), dtype=np.uint16)
+
+        # self.results["neg_delta"] = np.zeros((N, N), dtype=np.float32)
+        # self.results["neg_var"] = np.zeros((N, N), dtype=np.float32)
+        # self.results["neg_count"] = np.zeros((N, N), dtype=np.uint16)
+
+    def validation_step(self, batch, batch_idx):
+
+        gene_ids, gene_target_ids, gene_vals, gene_targets, depths, _, _, _ = batch
+        batch_size = gene_ids.shape[0]
+        n_iters = 10
+
+        n_input_genes = gene_vals.shape[1]
+
+        gene_pred, _, _, _ = self.network.forward(
+            gene_ids, gene_target_ids, gene_vals, None, depths,
+        )
+
+        target_idx = gene_target_ids.to(torch.int16).detach().cpu().numpy()
+        rnd_idx = np.random.choice(n_input_genes, size=(10,), replace=False)
+
+        tf_set_idx = set(self.tf_list_idx)
+
         for n in range(n_iters):
 
+            # rnd_inc = torch.from_numpy(np.random.choice([1, 2, 3], size=(batch_size,), replace=True)).to(gene_vals.device)
+
             gene_vals_perturb = copy.deepcopy(gene_vals.clone().detach())
-            rnd_idx = np.zeros(batch_size, dtype=np.int64)
+
+            source_idx = np.zeros(batch_size, dtype=np.int64)
+            #source_gene_idx = np.zeros(batch_size, dtype=np.int64)
+
             for i in range(batch_size):
-                idx = torch.where(gene_vals_perturb[i, :] >= 1)[0]
-                if len(idx) > 0:
-                    rnd_idx[i] = np.random.choice(idx.cpu().numpy())
-                    #gene_vals_perturb[i, rnd_idx[i]] = torch.clip(
-                    #    gene_vals_perturb[i, rnd_idx[i]] - 1, 0, self.n_bins-1
-                    #)
-                    gene_vals_perturb[i, rnd_idx[i]] = 0
+                gene_ids_numpy = gene_ids[i, :].cpu().numpy()
+                idx_intersection = list(tf_set_idx.intersection(set(gene_ids_numpy)))
+                j = np.random.choice(idx_intersection)
+                k = np.where(gene_ids_numpy == j)[0]
+                source_idx[i] = np.where(np.array(self.tf_list_idx) == j)[0][0]
+                #gene_vals_perturb[i, k] = torch.log(1 + torch.exp(gene_vals_perturb[i, k]))
+                gene_vals_perturb[i, k] += 1.0
 
 
-            gene_pred_perturb, _, _ = self.network.forward(
-                gene_ids, gene_target_ids, gene_vals_perturb, key_padding_mask,
+            # gene_vals_perturb[:, rnd_idx[n]] = torch.log(1 + torch.exp(gene_vals_perturb[:, rnd_idx[n]]))
+            # TODO: add fix when binning inputs
+            # gene_vals_perturb[:, rnd_idx[n]] = torch.clip(
+            #    gene_vals_perturb[:, rnd_idx[n]] + rnd_inc, 0, self.n_bins-1
+            # )
+
+            gene_pred_perturb, _, _, _ = self.network.forward(
+                gene_ids, gene_target_ids, gene_vals_perturb, None, depths,
             )
 
-            source_idx = gene_ids[torch.arange(batch_size), rnd_idx].to(torch.int16).detach().cpu().numpy()
+            # source_idx = gene_ids[:, rnd_idx[n]].to(torch.int16).detach().cpu().numpy()
+            # delta = gene_pred_perturb.to(torch.float32).detach().cpu().numpy() - gene_pred.to(
+            #    torch.float32).detach().cpu().numpy()
 
+            #delta0 = (
+            #    torch.exp(gene_pred_perturb[..., 0]) -  torch.exp(gene_pred[..., 0])
+            #).to(torch.float32).detach().cpu().numpy()
 
-            delta = gene_pred_perturb.to(torch.float32).detach().cpu().numpy() - gene_pred.to(torch.float32).detach().cpu().numpy()
-            delta = delta[:, :, 0]
-            #print("B", delta.std(), torch.sum(torch.abs(gene_vals_perturb - gene_vals)))
+            delta = (gene_pred_perturb[..., 0] - gene_pred[..., 0]).to(torch.float32).detach().cpu().numpy()
+
 
             for i in range(batch_size):
-                count = self.results["neg_count"][source_idx[i], target_idx[i]]
-                prev_mean = self.results["neg_delta"][source_idx[i], target_idx[i]] / (1e-6 + count)
-                prev_var = self.results["neg_var"][source_idx[i], target_idx[i]]
+                count = self.results["pos_count"][source_idx[i], target_idx[i]]
+                prev_mean = self.results["pos_delta"][source_idx[i], target_idx[i]] / (1e-6 + count)
+                prev_var = self.results["pos_var"][source_idx[i], target_idx[i]]
 
-                self.results["neg_count"][source_idx[i], target_idx[i]] += 1
-                self.results["neg_delta"][source_idx[i], target_idx[i]] += delta[i, :]
+                self.results["pos_count"][source_idx[i], target_idx[i]] += 1
+                self.results["pos_delta"][source_idx[i], target_idx[i]] += delta[i, :]
+                #self.results["pos_delta"][source_idx[i], target_idx[i], 1] += delta1[i, :]
 
-                count = self.results["neg_count"][source_idx[i], target_idx[i]]
-                current_mean = self.results["neg_delta"][source_idx[i], target_idx[i]] / (1e-6 + count)
+                count = self.results["pos_count"][source_idx[i], target_idx[i]]
+                current_mean = self.results["pos_delta"][source_idx[i], target_idx[i]] / (1e-6 + count)
 
                 current_var = prev_var + (delta[i, :] - prev_mean) * (delta[i, :] - current_mean)
-                self.results["neg_var"][source_idx[i], target_idx[i]] = current_var
-        """
+                self.results["pos_var"][source_idx[i], target_idx[i]] = current_var
+
 
 
 class MSELoss(BaseTask):
@@ -507,11 +724,13 @@ class MSELoss(BaseTask):
 
         # Functions and metrics
         if self.task_cfg["loss"] == "MSE":
-            self.mse = nn.MSELoss()
+            self.mse = nn.MSELoss(reduction="none")
         else:
             self.zinb = ZINB()
-        self.val_mse = MeanSquaredError()
-        self.explained_var = ExplainedVariance()
+        self.val_mse_masked = MeanSquaredError()
+        self.explained_var_masked = ExplainedVariance()
+        self.val_mse_unmasked = MeanSquaredError()
+        self.explained_var_unmasked = ExplainedVariance()
 
         self.gene_names = task_cfg["gene_names"] if "gene_names" in task_cfg else None
         self._create_results_dict()
@@ -526,13 +745,14 @@ class MSELoss(BaseTask):
 
     def training_step(self, batch, batch_idx):
 
-        gene_ids, gene_target_ids, gene_vals, gene_targets, key_padding_mask, depths, _, _, _ = batch
-        gene_pred, latent, _ = self.network.forward(
+        gene_ids, gene_target_ids, gene_vals, gene_targets, key_padding_mask, target_mask, depths, _, _, _ = batch
+        gene_pred, latent, _, _= self.network.forward(
             gene_ids, gene_target_ids, gene_vals, key_padding_mask, depths,
         )
 
+
         if self.task_cfg["loss"] == "MSE":
-            gene_loss = self.mse(gene_pred, gene_targets.unsqueeze(2))
+            gene_loss = (target_mask * self.mse(gene_pred[:, :, 0], gene_targets)).mean()
         elif self.task_cfg["loss"] == "ZINB":
             theta = self.network.output_theta(gene_target_ids)
             gene_loss = self.zinb(
@@ -563,9 +783,9 @@ class MSELoss(BaseTask):
 
     def validation_step(self, batch, batch_idx):
 
-        gene_ids, gene_target_ids, gene_vals, gene_targets, key_padding_mask, depths, _, _, _ = batch
+        gene_ids, gene_target_ids, gene_vals, gene_targets, key_padding_mask, target_mask, depths, _, _, _ = batch
 
-        gene_pred, _, _ = self.network.forward(
+        gene_pred, _, _, _ = self.network.forward(
             gene_ids, gene_target_ids, gene_vals, key_padding_mask, depths,
         )
 
@@ -575,8 +795,13 @@ class MSELoss(BaseTask):
             self.results["gene_pred"].append(gene_pred.to(torch.float32).detach().cpu().numpy())
 
         if self.task_cfg["loss"] == "MSE":
-            self.explained_var(gene_pred, gene_targets.unsqueeze(2))
-            self.val_mse(gene_pred, gene_targets.unsqueeze(2))
+            idx_masked = torch.where(target_mask * key_padding_mask)
+            idx_unmasked = torch.where(target_mask * (1 - key_padding_mask))
+            self.explained_var_masked(gene_pred[idx_masked], gene_targets[idx_masked].unsqueeze(-1))
+            self.val_mse_masked(gene_pred[idx_masked], gene_targets[idx_masked].unsqueeze(-1))
+            self.explained_var_unmasked(gene_pred[idx_unmasked], gene_targets[idx_unmasked].unsqueeze(-1))
+            self.val_mse_unmasked(gene_pred[idx_unmasked], gene_targets[idx_unmasked].unsqueeze(-1))
+
         elif self.task_cfg["loss"] == "ZINB":
 
             # softplus_pi = F.softplus(-gene_pred[..., 2])  # log(1 + exp(-pi)) for stability
@@ -590,8 +815,11 @@ class MSELoss(BaseTask):
             self.ex_var_mse_val(gene_pred[..., 2], gene_targets)
             self.log("exp_var_mse", self.ex_var_mse_val, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
 
-        self.log("exp_var", self.explained_var, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
-        self.log("mse", self.val_mse, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("exp_var_masked", self.explained_var_masked, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("mse_masked", self.val_mse_masked, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("exp_var_unmasked", self.explained_var_unmasked, on_step=False, on_epoch=True, prog_bar=True,sync_dist=True)
+        self.log("mse_unmasked", self.val_mse_unmasked, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+
 
     def on_validation_epoch_end(self):
 
