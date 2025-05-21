@@ -9,7 +9,9 @@ import torch
 import math
 import torch.nn.functional as F
 from torch import nn
-from modules import MLP, ProcessSelfAttn, MLPEmbedding, Decoder, CrossAttn, gMLP_stack
+from modules import (
+    ProcessSelfAttn, MLPEmbedding, Decoder, CrossAttn, gMLP_stack, DecoderNoCrossAttn, EncoderDeocderStack
+)
 
 
 class Exceiver(nn.Module):
@@ -290,6 +292,106 @@ class ContrastiveGatedMLP(nn.Module):
         return z, cell_pred
 
 
+class EncoderDecoderNetwork(nn.Module):
+
+    # seq_dim: Dimension of gene representations.
+    # query_len: Size of input query, or latent representation length.
+    # query_dim: Dimension of input query.
+    # n_layers: Number of ProcessSelfAttention layers.
+    # n_heads: Number of ProcessSelfAttention heads.
+    # dim_feedforward: Dimension of ProcessSelfAttention feedforward network.
+    # dropout: Value of ProcessSelfAttention dropout.
+
+    def __init__(
+        self,
+        seq_len: int,
+        seq_dim: int,
+        query_len: int,
+        query_dim: int,
+        n_heads: int,
+        n_layers: int,
+        dropout: float = 0.0,  # for the process attention module
+        gene_val_emb_input_dim: int = 128,
+        linear_embedding: bool = True,
+        cell_properties: Optional[Dict[str, Any]] = None,
+        RDA: bool = False,
+        loss: Literal["MSE", "ZINB"] = "MSE",
+        output_pi: bool = False,  # only needed in loss == ZINB
+        **kwargs,
+    ):
+        super().__init__()
+
+        self.seq_len = seq_len
+        self.seq_dim = seq_dim
+        self.RDA = RDA
+        self.loss = loss
+        self.output_pi = output_pi
+        self.gene_val_emb_input_dim = gene_val_emb_input_dim
+        self.linear_embedding = linear_embedding
+
+        self._create_gene_embeddings()
+        self.query_emb = nn.Parameter(torch.randn(query_len, query_dim))
+        self.encode_decode_stack = EncoderDeocderStack(query_dim, seq_dim, n_layers, dropout=dropout)
+        self.decoder = DecoderNoCrossAttn(seq_dim,dropout=dropout, n_out=1, layernorm=True, hidden_layers=2)
+
+
+    def _create_gene_embeddings(self):
+
+        self.key_mask_emb =  nn.Parameter(torch.randn(1, 1, self.seq_dim))
+        self.gene_emb = nn.Embedding(self.seq_len + 1, self.seq_dim, padding_idx=self.seq_len)
+        self.gene_val_emb_input = nn.Embedding(self.seq_len + 1, self.gene_val_emb_input_dim, padding_idx=self.seq_len)
+        self.gene_val_emb = MLPEmbedding(self.seq_dim, n_input=self.gene_val_emb_input_dim, linear=self.linear_embedding)
+
+        if self.loss == "ZINB":
+            self.theta = nn.Embedding(self.seq_len + 1, 1, padding_idx=self.seq_len)  # dispersion
+            self.theta.weight.data.fill_(0.0)
+
+    def _gene_embedding(
+        self,
+        gene_ids: torch.Tensor,
+        gene_vals: torch.Tensor,
+        key_padding_mask: torch.Tensor,
+    ) -> torch.Tensor:
+
+        gene_input = self.gene_val_emb_input(gene_ids)
+
+        output = (
+            self.gene_emb(gene_ids) +
+            (1 - key_padding_mask.unsqueeze(-1)) * self.gene_val_emb(gene_vals.unsqueeze(-1) * gene_input) +
+            key_padding_mask.unsqueeze(-1) * self.key_mask_emb
+        )
+
+        return output
+
+    def output_theta_emb(self, gene_target_ids: torch.Tensor):
+
+        return self.theta(gene_target_ids) + 1.0 if self.loss == "ZINB" else None
+
+    def output_pi_emb(self, gene_target_ids: torch.Tensor):
+
+        return self.pi(gene_target_ids) if self.loss == "ZINB" else None
+
+    def forward(
+        self,
+        gene_ids: torch.Tensor,
+        gene_target_ids: torch.Tensor,
+        gene_vals: torch.Tensor,
+        key_padding_mask: Optional[torch.Tensor] = None,
+        depths: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+
+        input_query = self.query_emb.repeat(len(gene_ids), 1, 1)
+        gene_query = self.gene_emb(gene_target_ids)
+        key_vals = self._gene_embedding(gene_ids, gene_vals, key_padding_mask)
+
+        # Main calculation of latent variables
+        latent  = self.encode_decode_stack(input_query, gene_query, key_vals, key_padding_mask)
+        gene_pred = self.decoder(latent)
+
+
+        return gene_pred, latent, None, None
+
+
 class GatedMLP(nn.Module):
 
     # seq_dim: Dimension of gene representations.
@@ -301,23 +403,24 @@ class GatedMLP(nn.Module):
     # dropout: Value of ProcessSelfAttention dropout.
 
     def __init__(
-            self,
-            seq_len: int,
-            seq_dim: int,
-            query_len: int,
-            query_dim: int,
-            n_heads: int,
-            n_layers: int,
-            dropout: float = 0.0,  # for the process attention module
-            embedding_strategy: Literal["binned", "continuous", "continuous"] = "continuous",
-            linear_embedding: bool = False,
-            n_bins: Optional[int] = None,
-            cell_properties: Optional[Dict[str, Any]] = None,
-            RDA: bool = False,
-            second_layer_RDA: bool = False,
-            loss: Literal["MSE", "ZINB"] = "MSE",
-            output_pi: bool = False,  # only needed in loss == ZINB
-            **kwargs,
+        self,
+        seq_len: int,
+        seq_dim: int,
+        query_len: int,
+        query_dim: int,
+        n_heads: int,
+        n_layers: int,
+        dropout: float = 0.0,  # for the process attention module
+        embedding_strategy: Literal["binned", "continuous", "continuous"] = "continuous",
+        linear_embedding: bool = False,
+        gene_val_emb_input_dim: int = 128,
+        n_bins: Optional[int] = None,
+        cell_properties: Optional[Dict[str, Any]] = None,
+        RDA: bool = False,
+        second_layer_RDA: bool = False,
+        loss: Literal["MSE", "ZINB"] = "MSE",
+        output_pi: bool = False,  # only needed in loss == ZINB
+        **kwargs,
     ):
 
         super().__init__()
@@ -331,6 +434,7 @@ class GatedMLP(nn.Module):
         self.second_layer_RDA = second_layer_RDA
         self.loss = loss
         self.output_pi = output_pi
+        self.gene_val_emb_input_dim = gene_val_emb_input_dim
 
         assert (
             embedding_strategy != "binned" or (embedding_strategy == "binned" and n_bins is not None),
@@ -353,14 +457,21 @@ class GatedMLP(nn.Module):
         self.gmlp = gMLP_stack(query_len, seq_dim, seq_dim * 2, n_layers)
 
         if loss == "ZINB" and not self.output_pi:
-            self.decoder_theta_pi = Decoder(seq_dim, query_dim, dropout=0.0, hidden_layers=2, n_out=2)
-
-        if loss == "ZINB" and self.output_pi:
-            n_out = 3
-        elif loss == "ZINB" and not self.output_pi:
+            self.decoder_pi = Decoder(
+                seq_dim,
+                query_dim,
+                dropout=0.0,
+                hidden_layers=2,
+                hidden_expansion=1 / 32,
+                n_out=1,
+            )
             n_out = 2
+
+        elif loss == "ZINB" and self.output_pi:
+            n_out = 3
         else:
             n_out = 1
+
         self.decoder = Decoder(
             seq_dim,
             query_dim,
@@ -409,10 +520,9 @@ class GatedMLP(nn.Module):
             self.gene_emb = nn.Embedding(self.seq_len + 1, self.seq_dim, padding_idx=self.seq_len)
             self.gene_bin_emb = nn.Embedding(self.seq_len + 1, self.seq_dim, padding_idx=0)
         elif self.embedding_strategy == "continuous":
-            n_input = 16
             self.gene_emb = nn.Embedding(self.seq_len + 1, self.seq_dim, padding_idx=self.seq_len)
-            self.gene_val_emb_input = nn.Embedding(self.seq_len + 1, n_input, padding_idx=self.seq_len)
-            self.gene_val_emb = MLPEmbedding(self.seq_dim, n_input=n_input, linear=self.linear_embedding)
+            self.gene_val_emb_input = nn.Embedding(self.seq_len + 1, self.gene_val_emb_input_dim, padding_idx=self.seq_len)
+            self.gene_val_emb = MLPEmbedding(self.seq_dim, n_input=self.gene_val_emb_input_dim, linear=self.linear_embedding)
 
         if self.RDA:
             print("RDA based embedding")
@@ -424,23 +534,25 @@ class GatedMLP(nn.Module):
         if self.loss == "ZINB":
             self.theta = nn.Embedding(self.seq_len + 1, 1, padding_idx=self.seq_len)  # dispersion
             self.theta.weight.data.fill_(0.0)
+            """
             if not self.output_pi:
                 self.pi = nn.Embedding(self.seq_len + 1, 1, padding_idx=self.seq_len)  # dropout
                 self.pi.weight.data.fill_(0.0)
                 self.theta_pi_cell_emb = nn.Parameter(torch.randn(1, 1, self.seq_dim))
+            """
 
-        self.target_emb = nn.Embedding(self.seq_len + 1, self.seq_dim, padding_idx=self.seq_len)
+        # self.target_emb = nn.Embedding(self.seq_len + 1, self.seq_dim, padding_idx=self.seq_len)
 
     def _target_embedding(self, gene_ids: torch.Tensor) -> torch.Tensor:
 
-        # return self.gene_emb(gene_ids)
-        return self.target_emb(gene_ids)
+        return self.gene_emb(gene_ids)
+        #return self.target_emb(gene_ids)
 
     def _gene_embedding(
-            self,
-            gene_ids: torch.Tensor,
-            gene_vals: torch.Tensor,
-            depths: torch.Tensor,
+        self,
+        gene_ids: torch.Tensor,
+        gene_vals: torch.Tensor,
+        depths: torch.Tensor,
     ) -> torch.Tensor:
 
         if self.embedding_strategy == "binned":
@@ -448,6 +560,7 @@ class GatedMLP(nn.Module):
         elif self.embedding_strategy == "continuous":
             gene_input = self.gene_val_emb_input(gene_ids)
             output = self.gene_emb(gene_ids) + self.gene_val_emb(gene_vals.unsqueeze(-1) * gene_input)
+
         elif self.embedding_strategy == "film":
             output = self.gene_emb(gene_ids) + self.gene_scale(gene_ids) * self.gene_val_emb(gene_vals)
 
@@ -473,12 +586,12 @@ class GatedMLP(nn.Module):
         return self.pi(gene_target_ids) if self.loss == "ZINB" else None
 
     def forward(
-            self,
-            gene_ids: torch.Tensor,
-            gene_target_ids: torch.Tensor,
-            gene_vals: torch.Tensor,
-            key_padding_mask: Optional[torch.Tensor] = None,
-            depths: Optional[torch.Tensor] = None,
+        self,
+        gene_ids: torch.Tensor,
+        gene_target_ids: torch.Tensor,
+        gene_vals: torch.Tensor,
+        key_padding_mask: Optional[torch.Tensor] = None,
+        depths: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
 
         key_padding_mask = None
@@ -499,13 +612,9 @@ class GatedMLP(nn.Module):
         gene_pred = self.decoder(latent, gene_query)
 
         if self.loss == "ZINB" and not self.output_pi:
-            query = self.theta_pi_cell_emb.repeat(len(gene_ids), 1, 1).to(latent.device)
-            out = self.decoder_theta_pi(latent, query)
-            theta_gene = self.output_theta_emb(gene_target_ids)
-            theta = out[..., 0] + theta_gene[..., 0]
-            pi_gene = self.output_pi_emb(gene_target_ids)
-            pi = out[..., 1] + pi_gene[..., 0]
-            zinb_out = (theta, pi)
+            theta = self.output_theta_emb(gene_target_ids)
+            pi = self.decoder_pi(latent, gene_query)
+            zinb_out = (theta[..., 0], pi[..., 0])
         else:
             zinb_out = None
 
@@ -550,13 +659,16 @@ class GatedMLP(nn.Module):
             gene_vals: torch.Tensor,
             depths: Optional[torch.Tensor] = None,
             pi_pred: Optional[torch.Tensor] = None,
+            loss="ZINB",
+            prev_gene_pred=None,
+            prev_gene_vals=None,
     ) -> torch.Tensor:
 
         gene_pred, latent, _, zinb_out = self.forward(
             gene_ids, gene_target_ids, gene_vals, None, depths,
         )
 
-        if self.loss == "ZINB":
+        if loss == "ZINB":
             if self.output_pi:
                 theta_gene = self.output_theta_emb(gene_target_ids)
                 theta = theta_gene[..., 0].to(torch.float32)
@@ -573,12 +685,193 @@ class GatedMLP(nn.Module):
                     pi = copy.deepcopy(pi_pred)
 
             mu = gene_pred[..., 0].to(torch.float32)
-            print("MU", mu.mean(), " PI", pi.mean())
             samples = self.sample_zinb(mu, theta, pi)
             return samples, pi
 
         else:
-            return gene_pred
+            if prev_gene_pred is not None and prev_gene_vals is not None:
+                delta = gene_pred[..., 0] - prev_gene_pred
+                new_gene_vals = prev_gene_vals + delta
+
+                #new_gene_vals = gene_pred[..., 0]
+                batch_size = gene_vals.shape[0]
+
+                #for i in range(batch_size):
+                #    new_gene_vals[i, gene_ids[i, :]] = prev_gene_vals[i, gene_ids[i, :]]
+
+                # print("DELTA", delta.mean(), "NEW VALS ", new_gene_vals.mean(), "OLD", prev_gene_vals.mean())
+                return new_gene_vals, gene_pred[..., 0]
+
+            else:
+                return gene_pred[..., 1], None
+
+
+class Hyena(nn.Module):
+
+    # seq_dim: Dimension of gene representations.
+    # query_len: Size of input query, or latent representation length.
+    # query_dim: Dimension of input query.
+    # n_layers: Number of ProcessSelfAttention layers.
+    # n_heads: Number of ProcessSelfAttention heads.
+    # dim_feedforward: Dimension of ProcessSelfAttention feedforward network.
+    # dropout: Value of ProcessSelfAttention dropout.
+
+    def __init__(
+        self,
+        seq_len: int,
+        seq_dim: int,
+        query_len: int,
+        query_dim: int,
+        n_heads: int,
+        n_layers: int,
+        dropout: float = 0.0,  # for the process attention module
+        embedding_strategy: Literal["binned", "continuous", "continuous"] = "continuous",
+        linear_embedding: bool = False,
+        gene_val_emb_input_dim: int = 128,
+        n_bins: Optional[int] = None,
+        cell_properties: Optional[Dict[str, Any]] = None,
+        RDA: bool = False,
+        second_layer_RDA: bool = False,
+        loss: Literal["MSE", "ZINB"] = "MSE",
+        output_pi: bool = False,  # only needed in loss == ZINB
+        **kwargs,
+    ):
+
+        super().__init__()
+
+        self.seq_len = seq_len
+        self.seq_dim = seq_dim
+        self.n_bins = n_bins
+        self.embedding_strategy = embedding_strategy
+        self.linear_embedding = linear_embedding
+        self.RDA = RDA
+        self.second_layer_RDA = second_layer_RDA
+        self.loss = loss
+        self.output_pi = output_pi
+        self.gene_val_emb_input_dim = gene_val_emb_input_dim
+
+        assert (
+            embedding_strategy != "binned" or (embedding_strategy == "binned" and n_bins is not None),
+            "n_bins must be specified if embedding strategy is 'binned'"
+        )
+        # create the gene embeddings based on whether to use rank ordering
+        self._create_gene_embeddings()
+
+
+        self.hyena = hyena_stack(seq_dim, n_layers, kernel_size=64, hidden_dim=256)
+
+        if loss == "ZINB":
+            n_out = 3
+        else:
+            n_out = 1
+
+        self.decoder = DecoderNoCrossAttn(
+            seq_dim,
+            dropout=0.0,
+            hidden_layers=2,
+            n_out=n_out,
+        )
+
+
+    def _create_gene_embeddings(self):
+
+        if self.embedding_strategy == "binned":
+            self.gene_emb = nn.Embedding(self.seq_len + 1, self.seq_dim, padding_idx=self.seq_len)
+            self.gene_bin_emb = nn.Embedding(self.seq_len + 1, self.seq_dim, padding_idx=0)
+        elif self.embedding_strategy == "continuous":
+            self.gene_emb = nn.Embedding(self.seq_len + 1, self.seq_dim, padding_idx=self.seq_len)
+            self.gene_val_emb_input = nn.Embedding(self.seq_len + 1, self.gene_val_emb_input_dim, padding_idx=self.seq_len)
+            self.gene_val_emb = MLPEmbedding(self.seq_dim, n_input=self.gene_val_emb_input_dim, linear=self.linear_embedding)
+
+        if self.RDA:
+            print("RDA based embedding")
+            self.target_depth_val_emb = MLPEmbedding(self.seq_dim, linear=self.linear_embedding)
+            self.input_depth_val_emb = MLPEmbedding(self.seq_dim, linear=self.linear_embedding)
+            self.target_depth_emb = nn.Parameter(torch.randn(1, 1, self.seq_dim))
+            self.input_depth_emb = nn.Parameter(torch.randn(1, 1, self.seq_dim))
+
+        if self.loss == "ZINB":
+            self.theta = nn.Embedding(self.seq_len + 1, 1, padding_idx=self.seq_len)  # dispersion
+            self.theta.weight.data.fill_(0.0)
+            """
+            if not self.output_pi:
+                self.pi = nn.Embedding(self.seq_len + 1, 1, padding_idx=self.seq_len)  # dropout
+                self.pi.weight.data.fill_(0.0)
+                self.theta_pi_cell_emb = nn.Parameter(torch.randn(1, 1, self.seq_dim))
+            """
+
+        # self.target_emb = nn.Embedding(self.seq_len + 1, self.seq_dim, padding_idx=self.seq_len)
+
+    def _target_embedding(self, gene_ids: torch.Tensor) -> torch.Tensor:
+
+        return self.gene_emb(gene_ids)
+        #return self.target_emb(gene_ids)
+
+    def _gene_embedding(
+            self,
+            gene_ids: torch.Tensor,
+            gene_vals: torch.Tensor,
+            depths: torch.Tensor,
+    ) -> torch.Tensor:
+
+        if self.embedding_strategy == "binned":
+            output = self.gene_emb(gene_ids) + self.gene_bin_emb(gene_vals.to(torch.long))
+        elif self.embedding_strategy == "continuous":
+            gene_input = self.gene_val_emb_input(gene_ids)
+            output = self.gene_emb(gene_ids) + self.gene_val_emb(gene_vals.unsqueeze(-1) * gene_input)
+
+        elif self.embedding_strategy == "film":
+            output = self.gene_emb(gene_ids) + self.gene_scale(gene_ids) * self.gene_val_emb(gene_vals)
+
+        if self.RDA:
+            target_depth_emb = self.target_depth_val_emb(depths[:, 0:1]) + self.target_depth_emb
+            input_depth_emb = self.input_depth_val_emb(depths[:, 1:2]) + self.input_depth_emb
+            if not self.second_layer_RDA:
+                output = torch.concat((output, target_depth_emb, input_depth_emb), dim=1)
+                depth_vectors = None
+            else:
+                depth_vectors = torch.concat((target_depth_emb, input_depth_emb), dim=1)
+        else:
+            depth_vectors = None
+
+        return output, depth_vectors
+
+    def output_theta_emb(self, gene_target_ids: torch.Tensor):
+
+        return self.theta(gene_target_ids) + 1.0 if self.loss == "ZINB" else None
+
+    def output_pi_emb(self, gene_target_ids: torch.Tensor):
+
+        return self.pi(gene_target_ids) if self.loss == "ZINB" else None
+
+    def forward(
+            self,
+            gene_ids: torch.Tensor,
+            gene_target_ids: torch.Tensor,
+            gene_vals: torch.Tensor,
+            key_padding_mask: Optional[torch.Tensor] = None,
+            depths: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+
+
+        key_vals, depth_vectors = self._gene_embedding(gene_ids, gene_vals, depths)
+        gene_query = self._target_embedding(gene_target_ids)
+
+
+        latent = self.hyena(key_vals)
+        gene_pred = self.decoder(latent, gene_query)
+
+        if self.loss == "ZINB" and not self.output_pi:
+            theta = self.output_theta_emb(gene_target_ids)
+            pi = self.decoder_pi(latent, gene_query)
+            zinb_out = (theta[..., 0], pi[..., 0])
+        else:
+            zinb_out = None
+
+
+        feature_pred = None
+
+        return gene_pred, latent, feature_pred, zinb_out
 
 
 class Exceiver_atacseq(nn.Module):
@@ -592,20 +885,20 @@ class Exceiver_atacseq(nn.Module):
     # dropout: Value of ProcessSelfAttention dropout.
 
     def __init__(
-            self,
-            seq_len: int,
-            seq_dim: int,
-            query_len: int,
-            query_dim: int,
-            n_layers: int,
-            n_heads: int,
-            dim_feedforward: int,
-            n_chr: int = 23,
-            dropout: float = 0.0,  # for the process attention module
-            n_bins: Optional[int] = None,
-            n_emb_per_chr: int = 4000,
-            predict_atac: bool = False,
-            **kwargs,
+        self,
+        seq_len: int,
+        seq_dim: int,
+        query_len: int,
+        query_dim: int,
+        n_layers: int,
+        n_heads: int,
+        dim_feedforward: int,
+        n_chr: int = 23,
+        dropout: float = 0.0,  # for the process attention module
+        n_bins: Optional[int] = None,
+        n_emb_per_chr: int = 4000,
+        predict_atac: bool = False,
+        **kwargs,
     ):
 
         super().__init__()
@@ -1013,6 +1306,7 @@ def load_model(model_save_path, model):
 
     for k, v in ckpt[key].items():
         loaded = False
+        # print("CKPT", k, v.shape)
         if "cell_property" in k:
             non_network_params.append(k)
         elif "network" in k:
@@ -1027,7 +1321,7 @@ def load_model(model_save_path, model):
         if not loaded:
             print(f"{k} not loaded, {v.shape}")
 
-    model.load_state_dict(state_dict, strict=False)
+    model.load_state_dict(state_dict, strict=True)
     print(f"Number of params loaded: {len(params_loaded)}")
     print(f"Non-network parameters not loaded: {non_network_params}")
 

@@ -4,6 +4,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import nn
+import torch.fft
 
 class MLP(nn.Module):
 
@@ -45,8 +46,128 @@ class MLPEmbedding(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
 
-        x = x.unsqueeze(-1) if self.n_input == 1 else x
+        # x = x.unsqueeze(-1) if self.n_input == 1 else x
         return self.mlp(x)
+
+
+class SimpleHyenaBlock(nn.Module):
+    def __init__(self, dim, kernel_size=64, hidden_dim=None):
+        super().__init__()
+        self.dim = dim
+        self.kernel_size = kernel_size
+        self.hidden_dim = hidden_dim or 4 * dim
+
+        self.modulator = nn.Sequential(
+            nn.Linear(dim, self.hidden_dim),
+            nn.GELU(),
+            nn.Linear(self.hidden_dim, dim)
+        )
+
+        # One kernel per channel
+        self.kernel = nn.Parameter(torch.randn(dim, kernel_size))
+
+        self.in_proj = nn.Linear(dim, dim)
+        self.out_proj = nn.Linear(dim, dim)
+
+    def forward(self, x):
+        # x: (batch, seq_len, dim)
+        B, L, D = x.shape
+        x_proj = self.in_proj(x)
+        mod = self.modulator(x)
+
+        modulated = x_proj * mod  # elementwise modulation
+
+        # FFT-based convolution per channel
+        x_fft = torch.fft.rfft(modulated.transpose(1, 2), n=L)
+        k_fft = torch.fft.rfft(self.kernel, n=L)
+        y_fft = x_fft * k_fft.unsqueeze(0)  # broadcasting kernel
+        y = torch.fft.irfft(y_fft, n=L).transpose(1, 2)
+
+        return self.out_proj(y)
+
+
+class EncoderDeocderStack(nn.Module):
+
+    def __init__(self, query_dim: int, gene_emb_dim: int, n_layers: int, num_heads: int = 4, dropout: float = 0.0):
+        super().__init__()
+
+        self.layers = nn.ModuleList(
+            [EncoderDeocder(query_dim, gene_emb_dim, num_heads=num_heads, dropout=dropout) for _ in range(n_layers)]
+        )
+
+    def forward(
+        self,
+        latent_query: torch.Tensor,
+        gene_query: torch.Tensor,
+        key_val: torch.Tensor,
+        key_padding_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+
+        for n, layer in enumerate(self.layers):
+            mask = key_padding_mask if n == 0 else None
+            key_val, _ = layer(latent_query, gene_query, key_val, mask)
+
+        return key_val
+
+
+class EncoderDeocder(nn.Module):
+
+    def __init__(self, query_dim: int, gene_emb_dim: int, num_heads: int = 4, dropout: float = 0.0):
+        super().__init__()
+        self.layernorm_kv = nn.LayerNorm(gene_emb_dim)
+        self.layernorm_q = nn.LayerNorm(query_dim)
+
+        self.layernorm_g = nn.LayerNorm(gene_emb_dim)
+        self.layernorm_l = nn.LayerNorm(query_dim)
+
+        self.encoder = nn.MultiheadAttention(
+            query_dim,
+            num_heads,
+            dropout=0.0,
+            kdim=gene_emb_dim,
+            vdim=gene_emb_dim,
+            batch_first=True,
+        )
+
+        self.decoder= nn.MultiheadAttention(
+            gene_emb_dim,
+            num_heads,
+            dropout=0.0,
+            kdim=gene_emb_dim,
+            vdim=gene_emb_dim,
+            batch_first=True,
+        )
+
+        self.mlp0 = MLP(query_dim, query_dim, dropout=dropout)
+        self.mlp1 = MLP(gene_emb_dim, gene_emb_dim, dropout=dropout)
+
+    def forward(
+        self,
+        latent_query: torch.Tensor,
+        gene_query: torch.Tensor,
+        key_val: torch.Tensor,
+        key_padding_mask: Optional[torch.Tensor] = None,
+        residual: bool = True,
+    ) -> torch.Tensor:
+
+        norm_kv = self.layernorm_kv(key_val)
+        norm_q = self.layernorm_q(latent_query)
+
+        # Encoder: full input -> latent
+        latent, _ = self.encoder(norm_q, norm_kv, norm_kv, key_padding_mask)
+        # latent = latent_query + latent_attn
+        latent = latent + self.mlp0(latent)
+
+        # Decoder: latent -> full
+        norm_g = self.layernorm_g(gene_query)
+        norm_l = self.layernorm_l(latent)
+
+        gene_out, _ = self.decoder(norm_g, norm_l, norm_l)
+        # gene_out = gene_query + decoder_out
+        gene_out = key_val + self.mlp1(gene_out)
+
+        return gene_out, latent
+
 
 
 class CrossAttn(nn.Module):
@@ -84,6 +205,61 @@ class CrossAttn(nn.Module):
         latent = self.mlp(latent) + latent
         return latent, weights
 
+
+class DecoderNoCrossAttn(nn.Module):
+
+    def __init__(
+        self,
+        seq_dim: int,
+        dropout: float = 0.0,  # for the process attention module
+        n_out: int = 1,
+        layernorm: bool = True,
+        hidden_expansion: float = 1,
+        hidden_layers: int = 1,
+    ):
+
+        super().__init__()
+
+        hidden_dim = int(hidden_expansion * seq_dim)
+
+        seq = [
+            nn.LayerNorm(seq_dim) if layernorm else nn.Identity(),
+            nn.Linear(seq_dim, hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+        ]
+
+        for n in range(1, hidden_layers):
+            seq += [
+                nn.LayerNorm(hidden_dim) if layernorm else nn.Identity(),
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.GELU(),
+                nn.Dropout(dropout),
+            ]
+
+        output_layer = nn.Linear(hidden_dim, n_out)
+        if n_out == 3:
+            # Now manually initialize:
+            # nn.init.xavier_uniform_(output_layer.weight, gain=0.1)  # or another sensible init
+            nn.init.zeros_(output_layer.bias)
+
+            # Then set pi bias to a negative value
+            with torch.no_grad():
+                output_layer.bias[2].fill_(-3.0)  # Or maybe -3.0 for even smaller dropout
+
+        seq += [output_layer]
+
+        self.gene_mlp = nn.Sequential(*seq)
+
+
+
+    def forward(self, x: torch.Tensor):
+
+        gene_pred = self.gene_mlp(x)
+
+        return gene_pred
+
+
 class Decoder(nn.Module):
 
     def __init__(
@@ -94,7 +270,7 @@ class Decoder(nn.Module):
         dropout: float = 0.0,  # for the process attention module
         n_out: int = 1,
         layernorm: bool = True,
-        hidden_expansion: int = 1,
+        hidden_expansion: float = 1,
         hidden_layers: int = 1,
     ):
 
@@ -106,22 +282,24 @@ class Decoder(nn.Module):
             dropout=cross_attn_dropout,
         )  # query is now gene embedding
 
+        hidden_dim = int(hidden_expansion * seq_dim)
+
         seq = [
             nn.LayerNorm(seq_dim) if layernorm else nn.Identity(),
-            nn.Linear(seq_dim, hidden_expansion * seq_dim),
+            nn.Linear(seq_dim, hidden_dim),
             nn.GELU(),
             nn.Dropout(dropout),
         ]
 
         for n in range(1, hidden_layers):
             seq += [
-                nn.LayerNorm(seq_dim) if layernorm else nn.Identity(),
-                nn.Linear(hidden_expansion * seq_dim, hidden_expansion * seq_dim),
+                nn.LayerNorm(hidden_dim) if layernorm else nn.Identity(),
+                nn.Linear(hidden_dim, hidden_dim),
                 nn.GELU(),
                 nn.Dropout(dropout),
             ]
 
-        output_layer = nn.Linear(hidden_expansion * seq_dim, n_out)
+        output_layer = nn.Linear(hidden_dim, n_out)
         if n_out == 3:
             # Now manually initialize:
             # nn.init.xavier_uniform_(output_layer.weight, gain=0.1)  # or another sensible init
@@ -161,8 +339,21 @@ class gMLP_stack(nn.Module):
             *[gMLP(seq_len, seq_dim, hidden_dim) for _ in range(n_layers)]
         )
 
-    def forward(self, input: torch.Tensor) -> torch.Tensor:
-        return self.gmlps(input)
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.gmlps(x)
+
+
+class hyena_stack(nn.Module):
+    def __init__(self, seq_dim: int, n_layers: int, kernel_size: int = 64, hidden_dim: int = 256):
+        super().__init__()
+
+        self.hyena_seq = nn.Sequential(
+            *[SimpleHyenaBlock(seq_dim, kernel_size=kernel_size, hidden_dim=hidden_dim) for _ in range(n_layers)]
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.hyena_seq(x)
+
 
 class gMLP(nn.Module):
     def __init__(self, query_len: int, seq_dim: int, hidden_dim: int):
