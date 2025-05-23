@@ -269,6 +269,7 @@ class FlexibleAttention(nn.Module):
             attn_out = memory_efficient_attention(Q, K, V, attn_bias=attn_bias)
         else:
             # Manual attention fallback
+            """
             Q_ = Q.transpose(1, 2).reshape(B * self.num_heads, L_q, self.head_dim_qk)
             K_ = K.transpose(1, 2).reshape(B * self.num_heads, L_kv, self.head_dim_qk)
             V_ = V.transpose(1, 2).reshape(B * self.num_heads, L_kv, self.head_dim_v)
@@ -283,6 +284,20 @@ class FlexibleAttention(nn.Module):
             weights = torch.softmax(scores, dim=-1)
             attn_out = torch.matmul(self.dropout(weights), V_)  # (B*H, L_q, Dv)
             attn_out = attn_out.view(B, self.num_heads, L_q, self.head_dim_v)
+            """
+            attn_mask = None
+            if key_padding_mask is not None:
+                # key_padding_mask: (B, L_k) → (B, 1, 1, L_k) → broadcast to (B, H, L_q, L_k)
+                attn_mask = key_padding_mask[:, None, None, :].expand(Q.shape[0], self.num_heads, Q.shape[2],
+                                                                      K.shape[2])
+                attn_mask = attn_mask.to(Q.device)
+
+            attn_out = F.scaled_dot_product_attention(
+                Q, K, V,
+                attn_mask=attn_mask,
+                dropout_p=0.0,
+                is_causal=False
+            )
 
         out = self._merge_heads(attn_out)  # (B, L_q, v_dim)
         return self.out_proj(out)
