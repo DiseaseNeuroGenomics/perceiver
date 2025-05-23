@@ -10,11 +10,19 @@ import math
 import torch.nn.functional as F
 from torch import nn
 from modules import (
-    ProcessSelfAttn, MLPEmbedding, Decoder, CrossAttn, gMLP_stack, DecoderNoCrossAttn, EncoderDeocderStack
+    ProcessSelfAttn,
+    MLPEmbedding,
+    Decoder,
+    CrossAttn,
+    gMLP_stack,
+    DecoderNoCrossAttn,
+    EncoderDeocderStack,
+    FlexibleAttentionBlock,
+    StackedFlexibleTransformer,
 )
 
 
-class Exceiver(nn.Module):
+class Perceiver(nn.Module):
 
     # seq_dim: Dimension of gene representations.
     # query_len: Size of input query, or latent representation length.
@@ -25,31 +33,26 @@ class Exceiver(nn.Module):
     # dropout: Value of ProcessSelfAttention dropout.
 
     def __init__(
-            self,
-            seq_len: int,
-            seq_dim: int,
-            query_len: int,
-            query_dim: int,
-            n_layers: int,
-            n_heads: int,
-            dim_feedforward: int,
-            embedding_strategy: Literal["binned", "continuous", "film"] = "continuous",
-            dropout: float = 0.0,  # for the process attention module
-            n_bins: Optional[int] = None,
-            n_out_feature: Optional[int] = None,
-            **kwargs,
+        self,
+        seq_len: int,
+        seq_dim: int,
+        query_len: int,
+        query_dim: int,
+        n_layers: int,
+        n_heads: int,
+        gene_val_emb_input_dim: int =128,
+        v_proj: int = None,
+        qk_proj: int = None,
+        dropout: float = 0.0,  # for the process attention module
+        n_out_feature: Optional[int] = None,
+        **kwargs,
     ):
 
         super().__init__()
 
         self.seq_len = seq_len
         self.seq_dim = seq_dim
-        self.n_bins = n_bins
-        self.embedding_strategy = embedding_strategy
-        assert (
-            embedding_strategy != "binned" or (embedding_strategy == "binned" and n_bins is not None),
-            "n_bins must be specified if embedding strategy is 'binned'"
-        )
+        self.gene_val_emb_input_dim = gene_val_emb_input_dim
 
         # create the gene embeddings based on whether to use rank ordering
         self._create_gene_embeddings()
@@ -57,95 +60,66 @@ class Exceiver(nn.Module):
         # self.output_emb = nn.Embedding(seq_len + 1, seq_dim, padding_idx=seq_len)
         self.query_emb = nn.Parameter(torch.randn(query_len, query_dim))
 
-        self.encoder_cross_attn = CrossAttn(
-            query_dim, seq_dim, num_heads=n_heads,
+        self.encoder_cross_attn = FlexibleAttentionBlock(
+            query_dim, seq_dim, qk_proj, v_proj, seq_dim, n_heads, mlp_ratio=3, dropout=dropout, norm_fn=nn.RMSNorm, use_xformers=False,
         )
 
-        self.process_self_attn = ProcessSelfAttn(
-            query_dim, n_layers, n_heads, dim_feedforward, dropout,
+        self.self_cross_attn = StackedFlexibleTransformer(
+            n_layers, query_dim, seq_dim, qk_proj, v_proj, seq_dim, n_heads, mlp_ratio=3, dropout=dropout, norm_fn=nn.RMSNorm, use_xformers=False,
         )
 
-        self.decoder = Decoder(seq_dim, query_dim, dropout)
-        if n_out_feature is not None:
-            self.feature_emb = self.query_emb = nn.Parameter(torch.randn(1, query_dim))
-            self.feature_decoder = Decoder(seq_dim, query_dim, dropout, n_out=n_out_feature)
-
-    def encoder_attn_step(
-            self,
-            key_vals: torch.Tensor,
-            input_query: torch.Tensor,
-            key_padding_mask: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-
-        latent, encoder_weights = self.encoder_cross_attn(
-            input_query, key_vals, key_padding_mask
+        self.decoder_cross_attn = FlexibleAttentionBlock(
+            query_dim, seq_dim, qk_proj, v_proj, seq_dim, n_heads, mlp_ratio=3, dropout=dropout, norm_fn=nn.RMSNorm, use_xformers=False,
         )
-        return latent, encoder_weights
+
+        self.decoder = DecoderNoCrossAttn(seq_dim, dropout=dropout, n_out=1, layernorm=True, hidden_layers=2)
+
 
     def _create_gene_embeddings(self):
 
-        if self.embedding_strategy == "binned":
-            self.gene_emb = nn.Embedding(self.seq_len + 1, self.seq_dim, padding_idx=self.seq_len)
-            self.gene_bin_emb = nn.Embedding(self.n_bins + 1, self.seq_dim, padding_idx=0)
-        elif self.embedding_strategy == "continuous":
-            self.gene_emb = nn.Embedding(self.seq_len + 1, self.seq_dim, padding_idx=self.seq_len)
-            self.gene_val_emb = MLPEmbedding(self.seq_dim)
-        elif self.embedding_strategy == "film":
-            self.gene_emb = nn.Embedding(self.seq_len + 1, self.seq_dim, padding_idx=self.seq_len)
-            self.gene_scale = nn.Embedding(self.seq_len + 1, self.seq_dim, padding_idx=self.seq_len)
-            self.gene_val_emb = MLPEmbedding(self.seq_dim)
-
-        self.target_emb = nn.Embedding(self.seq_len + 1, self.seq_dim, padding_idx=self.seq_len)
-
-    def _target_embedding(self, gene_ids: torch.Tensor) -> torch.Tensor:
-
-        # return self.gene_emb(gene_ids)
-        return self.target_emb(gene_ids)
+        self.key_mask_emb = nn.Parameter(torch.randn(1, 1, self.seq_dim))
+        self.gene_emb = nn.Embedding(self.seq_len + 1, self.seq_dim, padding_idx=self.seq_len)
+        self.gene_val_emb_input = nn.Embedding(self.seq_len + 1, self.gene_val_emb_input_dim, padding_idx=self.seq_len)
+        self.gene_val_emb = MLPEmbedding(self.seq_dim, n_input=self.gene_val_emb_input_dim, linear=True)
 
     def _gene_embedding(
             self,
             gene_ids: torch.Tensor,
             gene_vals: torch.Tensor,
+            key_padding_mask: torch.Tensor,
     ) -> torch.Tensor:
 
-        if self.embedding_strategy == "binned":
-            return self.gene_emb(gene_ids) + self.gene_bin_emb(gene_vals.to(torch.long))
-        elif self.embedding_strategy == "continuous":
-            return self.gene_emb(gene_ids) + self.gene_val_emb(gene_vals)
-        elif self.embedding_strategy == "film":
-            return self.gene_emb(gene_ids) + self.gene_scale(gene_ids) * self.gene_val_emb(gene_vals)
+        gene_input = self.gene_val_emb_input(gene_ids)
+
+        output = (
+                self.gene_emb(gene_ids) +
+                (1 - key_padding_mask.unsqueeze(-1)) * self.gene_val_emb(gene_vals.unsqueeze(-1) * gene_input) +
+                key_padding_mask.unsqueeze(-1) * self.key_mask_emb
+        )
+
+        return output
 
     def forward(
-            self,
-            gene_ids: torch.Tensor,
-            gene_target_ids: torch.Tensor,
-            gene_vals: torch.Tensor,
-            key_padding_mask: Optional[torch.Tensor] = None,
-            decode_feature: bool = False,
+        self,
+        gene_ids: torch.Tensor,
+        gene_target_ids: torch.Tensor,
+        gene_vals: torch.Tensor,
+        key_padding_mask: Optional[torch.Tensor] = None,
+        decode_feature: bool = False,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
 
         input_query = self.query_emb.repeat(len(gene_ids), 1, 1)
+        gene_query = self.gene_emb(gene_target_ids)
+        key_vals = self._gene_embedding(gene_ids, gene_vals, key_padding_mask)
 
-        key_vals = self._gene_embedding(gene_ids, gene_vals)
-        gene_query = self._target_embedding(gene_target_ids)
+        latent = self.encoder_cross_attn(input_query, key_vals, key_padding_mask)
+        latent = self.self_cross_attn(latent, latent)
+        latent = self.decoder_cross_attn(gene_query, latent)
 
-        # Main calculation of latent variables
-        latent, encoder_weights = self.encoder_attn_step(
-            key_vals, input_query, key_padding_mask
-        )
-        # latent = key_vals
-        # print(latent.shape)
-        latent = self.process_self_attn(latent)
+        gene_pred = self.decoder(latent)
 
-        gene_pred = self.decoder(latent, gene_query)
 
-        if decode_feature:
-            feature_query = self.feature_emb.repeat(len(gene_ids), 1, 1)
-            feature_pred = self.feature_decoder(latent, feature_query)
-        else:
-            feature_pred = None
-
-        return gene_pred, latent, feature_pred
+        return gene_pred, latent, None, None
 
 
 class ATACDecoder(nn.Module):

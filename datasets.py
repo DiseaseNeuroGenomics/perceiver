@@ -360,7 +360,7 @@ class SingleCellDataset(Dataset):
             possible_input_genes = np.where(include_gene_mask[n, :])[0]
 
             if self.masked_gene_selection == "BERT":
-                p_mask = 0.15
+                p_mask = 0.20
                 N = np.minimum(len(possible_input_genes), n_genes_batch)
                 input_idx = np.random.choice(possible_input_genes, N, replace=False)
                 gene_ids[n, :N] = gene_target_ids[n, :N] = input_idx

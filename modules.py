@@ -6,13 +6,21 @@ import torch.nn.functional as F
 from torch import nn
 import torch.fft
 
+from xformers.ops import memory_efficient_attention
+
+try:
+    from xformers.ops import memory_efficient_attention
+    HAS_XFORMERS = True
+except ImportError:
+    HAS_XFORMERS = False
+
 class MLP(nn.Module):
 
     def __init__(self, input_dim: int, hidden_dim: int, dropout: float = 0.0):
         super().__init__()
 
         self.mlp = nn.Sequential(
-            nn.LayerNorm(input_dim),
+            nn.RMSNorm(input_dim),
             nn.Linear(input_dim, hidden_dim),
             nn.GELU(),
             nn.Linear(hidden_dim, input_dim),
@@ -86,6 +94,258 @@ class SimpleHyenaBlock(nn.Module):
         return self.out_proj(y)
 
 
+class StackedFlexibleTransformer(nn.Module):
+    def __init__(
+        self,
+        num_layers: int,
+        query_input_dim: int,
+        kv_input_dim: int,
+        qk_dim: int,
+        v_dim: int,
+        output_dim: int,
+        num_heads: int,
+        mlp_ratio: int = 4,
+        use_xformers: bool = True,
+        dropout: float = 0.0,
+        norm_fn: nn.Module = nn.RMSNorm,
+    ):
+        super().__init__()
+
+        self.blocks = nn.ModuleList([
+            FlexibleAttentionBlock(
+                query_input_dim=query_input_dim,
+                kv_input_dim=kv_input_dim,
+                qk_dim=qk_dim,
+                v_dim=v_dim,
+                output_dim=output_dim,
+                num_heads=num_heads,
+                mlp_ratio=mlp_ratio,
+                use_xformers=use_xformers,
+                dropout=dropout,
+                norm_fn=norm_fn,
+            )
+            for _ in range(num_layers)
+        ])
+
+    def forward(
+        self,
+        query: torch.Tensor,  # (B, L_q, D)
+        key_value: Optional[torch.Tensor] = None,  # for cross-attn layers
+        key_padding_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        x = query
+
+        for block in self.blocks:
+            x = block(x, x, key_padding_mask)
+
+        return x
+
+
+class FlexibleAttentionBlock(nn.Module):
+    def __init__(
+        self,
+        query_input_dim: int,
+        kv_input_dim: int,
+        qk_dim: int,
+        v_dim: int,
+        output_dim: int,
+        num_heads: int,
+        mlp_ratio: int = 4,
+        use_xformers: bool = True,
+        dropout: float = 0.0,
+        norm_fn: nn.Module = nn.RMSNorm,  # swap in RMSNorm if desired
+    ):
+        super().__init__()
+
+        self.norm_q = norm_fn(query_input_dim)
+        self.norm_kv = norm_fn(kv_input_dim)
+
+        self.attn = FlexibleAttention(
+            query_input_dim=query_input_dim,
+            kv_input_dim=kv_input_dim,
+            qk_dim=qk_dim,
+            v_dim=v_dim,
+            output_dim=output_dim,
+            num_heads=num_heads,
+            use_xformers=use_xformers,
+            dropout=dropout,
+        )
+
+        self.norm_post = norm_fn(output_dim)
+
+        hidden_dim = output_dim * mlp_ratio
+        self.mlp = nn.Sequential(
+            nn.Linear(output_dim, hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, output_dim),
+            nn.Dropout(dropout),
+        )
+
+    def forward(
+        self,
+        query: torch.Tensor,         # (B, L_q, D_q)
+        key_value: torch.Tensor,     # (B, L_kv, D_kv)
+        key_padding_mask=None        # (B, L_kv)
+    ) -> torch.Tensor:
+        # Norm first (PreNorm transformer style)
+        q_norm = self.norm_q(query)
+        kv_norm = self.norm_kv(key_value)
+
+        # Attention + residual
+        attn_out = self.attn(q_norm, kv_norm, key_padding_mask=key_padding_mask)
+        x = query + attn_out
+
+        # MLP + residual
+        x = x + self.mlp(self.norm_post(x))
+        return x
+
+class FlexibleAttention(nn.Module):
+    def __init__(
+        self,
+        query_input_dim: int,
+        kv_input_dim: int,
+        qk_dim: int,
+        v_dim: int,
+        output_dim: int,
+        num_heads: int,
+        use_xformers: bool = True,
+        dropout: float = 0.0,
+    ):
+        super().__init__()
+        assert qk_dim % num_heads == 0, "qk_dim must be divisible by num_heads"
+        assert v_dim % num_heads == 0, "v_dim must be divisible by num_heads"
+
+        self.use_xformers = use_xformers and HAS_XFORMERS
+        self.num_heads = num_heads
+        self.qk_dim = qk_dim
+        self.v_dim = v_dim
+        self.head_dim_qk = qk_dim // num_heads
+        self.head_dim_v = v_dim // num_heads
+
+        # Q/K/V projections
+        self.q_proj = nn.Linear(query_input_dim, qk_dim)
+        self.k_proj = nn.Linear(kv_input_dim, qk_dim)
+        self.v_proj = nn.Linear(kv_input_dim, v_dim)
+
+        # Output projection
+        self.out_proj = nn.Linear(v_dim, output_dim)
+        self.dropout = nn.Dropout(dropout)
+
+    def _split_heads(self, x: torch.Tensor, head_dim: int) -> torch.Tensor:
+        # (B, L, D) → (B, H, L, D_head)
+        B, L, D = x.shape
+        H = D // head_dim
+        return x.view(B, L, H, head_dim).transpose(1, 2)
+
+    def _merge_heads(self, x: torch.Tensor) -> torch.Tensor:
+        # (B, H, L, D_head) → (B, L, H * D_head)
+        return x.transpose(1, 2).contiguous().view(x.size(0), x.size(2), -1)
+
+    def forward(
+        self,
+        query: torch.Tensor,          # (B, L_q, query_input_dim)
+        key_value: torch.Tensor,      # (B, L_kv, kv_input_dim)
+        key_padding_mask: Optional[torch.Tensor] = None  # (B, L_kv)
+    ) -> torch.Tensor:
+        B, L_q, _ = query.shape
+        L_kv = key_value.size(1)
+
+        Q = self._split_heads(self.q_proj(query), self.head_dim_qk)  # (B, H, L_q, Dq)
+        K = self._split_heads(self.k_proj(key_value), self.head_dim_qk)  # (B, H, L_kv, Dq)
+        V = self._split_heads(self.v_proj(key_value), self.head_dim_v)  # (B, H, L_kv, Dv)
+
+        if self.use_xformers:
+            attn_bias = None
+            if key_padding_mask is not None:
+                attn_bias = key_padding_mask[:, None, None, :]
+                attn_bias = attn_bias.expand(B, self.num_heads, L_q, L_kv)
+                attn_bias = torch.where(
+                    attn_bias.to(torch.bool),  # shape broadcast
+                    torch.tensor(float('-inf'), device=key_padding_mask.device, dtype=Q.dtype),
+                    torch.tensor(0.0, device=key_padding_mask.device, dtype=Q.dtype)
+                )
+
+            attn_out = memory_efficient_attention(Q, K, V, attn_bias=attn_bias)
+        else:
+            # Manual attention fallback
+            Q_ = Q.transpose(1, 2).reshape(B * self.num_heads, L_q, self.head_dim_qk)
+            K_ = K.transpose(1, 2).reshape(B * self.num_heads, L_kv, self.head_dim_qk)
+            V_ = V.transpose(1, 2).reshape(B * self.num_heads, L_kv, self.head_dim_v)
+
+            scores = torch.matmul(Q_, K_.transpose(-1, -2)) / self.head_dim_qk**0.5
+
+            if key_padding_mask is not None:
+                mask = key_padding_mask[:, None, :].expand(B, self.num_heads, L_kv).to(torch.bool)
+                mask = mask.reshape(B * self.num_heads, 1, L_kv)
+                scores.masked_fill_(mask, float('-inf'))
+
+            weights = torch.softmax(scores, dim=-1)
+            attn_out = torch.matmul(self.dropout(weights), V_)  # (B*H, L_q, Dv)
+            attn_out = attn_out.view(B, self.num_heads, L_q, self.head_dim_v)
+
+        out = self._merge_heads(attn_out)  # (B, L_q, v_dim)
+        return self.out_proj(out)
+
+
+class XformersMultiheadAttention(nn.Module):
+    def __init__(self, embed_dim, num_heads, dropout=0.0, v_proj_dim=None, kq_proj_dim=None):
+        super().__init__()
+
+        v_proj_dim = embed_dim if v_proj_dim is None else v_proj_dim
+        kq_proj_dim = embed_dim if kq_proj_dim is None else kq_proj_dim
+
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.v_head_dim = v_proj_dim // num_heads
+        self.kq_head_dim = kq_proj_dim // num_heads
+
+        self.q_proj = nn.Linear(embed_dim, kq_proj_dim)
+        self.k_proj = nn.Linear(embed_dim, kq_proj_dim)
+        self.v_proj = nn.Linear(embed_dim, v_proj_dim)
+        self.out_proj = nn.Linear(embed_dim, embed_dim)
+        self.dropout = dropout
+
+    def forward(self, query, key_value, key_padding_mask=None):
+        """
+        query: (B, L_q, query_dim)
+        key_value: (B, L_kv, kv_dim)
+        key_padding_mask: (B, L_kv) -> bool, True = pad
+        """
+        B, L_q, _ = query.shape
+        L_kv = key_value.shape[1]
+
+        # Linear projections
+        Q = self.q_proj(query)
+        K = self.k_proj(key_value)
+        V = self.v_proj(key_value)
+
+        # Reshape to (B, L, H, D)
+        Q = Q.view(B, L_q, self.num_heads, self.kq_proj_dim)
+        K = K.view(B, L_kv, self.num_heads, self.kq_proj_dim)
+        V = V.view(B, L_kv, self.num_heads, self.v_proj_dim)
+
+        # Optional attention bias for masking
+        attn_bias = None
+        if key_padding_mask is not None:
+            # Create additive mask: (B, L_kv, 1)
+            attn_bias = key_padding_mask[:, None, None, :]
+            attn_bias = attn_bias.expand(B, self.num_heads, L_q, L_kv)
+            attn_bias = torch.where(
+                attn_bias.to(torch.bool),  # shape broadcast
+                torch.tensor(-1e9, device=key_padding_mask.device, dtype=Q.dtype),
+                torch.tensor(0.0, device=key_padding_mask.device, dtype=Q.dtype)
+            )
+
+        # Apply efficient attention
+        out = memory_efficient_attention(Q, K, V, attn_bias=attn_bias, p=self.dropout if self.training else 0.0)
+
+        # Back to (B, L_q, H, D) → (B, L_q, query_dim)
+        out = out.transpose(1, 2).contiguous().view(B, L_q, self.embed_dim)
+
+        return self.out_proj(out)
+
+
 class EncoderDeocderStack(nn.Module):
 
     def __init__(self, query_dim: int, gene_emb_dim: int, n_layers: int, num_heads: int = 4, dropout: float = 0.0):
@@ -114,12 +374,13 @@ class EncoderDeocder(nn.Module):
 
     def __init__(self, query_dim: int, gene_emb_dim: int, num_heads: int = 4, dropout: float = 0.0):
         super().__init__()
-        self.layernorm_kv = nn.LayerNorm(gene_emb_dim)
-        self.layernorm_q = nn.LayerNorm(query_dim)
+        self.layernorm_kv = nn.RMSNorm(gene_emb_dim)
+        self.layernorm_q = nn.RMSNorm(query_dim)
 
-        self.layernorm_g = nn.LayerNorm(gene_emb_dim)
-        self.layernorm_l = nn.LayerNorm(query_dim)
+        self.layernorm_g = nn.RMSNorm(gene_emb_dim)
+        self.layernorm_l = nn.RMSNorm(query_dim)
 
+        """
         self.encoder = nn.MultiheadAttention(
             query_dim,
             num_heads,
@@ -136,6 +397,17 @@ class EncoderDeocder(nn.Module):
             kdim=gene_emb_dim,
             vdim=gene_emb_dim,
             batch_first=True,
+        )
+        """
+        self.encoder = XformersMultiheadAttention(
+            gene_emb_dim,
+            num_heads,
+            dropout=0.0,
+        )
+        self.decoder = XformersMultiheadAttention(
+            gene_emb_dim,
+            num_heads,
+            dropout=0.0,
         )
 
         self.mlp0 = MLP(query_dim, query_dim, dropout=dropout)
@@ -154,16 +426,18 @@ class EncoderDeocder(nn.Module):
         norm_q = self.layernorm_q(latent_query)
 
         # Encoder: full input -> latent
-        latent, _ = self.encoder(norm_q, norm_kv, norm_kv, key_padding_mask)
-        # latent = latent_query + latent_attn
+        #latent_attn, _ = self.encoder(norm_q, norm_kv, norm_kv, key_padding_mask)
+        latent_attn = self.encoder(norm_q, norm_kv, key_padding_mask)
+        latent = latent_query + latent_attn
         latent = latent + self.mlp0(latent)
 
         # Decoder: latent -> full
         norm_g = self.layernorm_g(gene_query)
         norm_l = self.layernorm_l(latent)
 
-        gene_out, _ = self.decoder(norm_g, norm_l, norm_l)
-        # gene_out = gene_query + decoder_out
+        #decoder_out, _ = self.decoder(norm_g, norm_l, norm_l)
+        decoder_out = self.decoder(norm_g, norm_l)
+        gene_out = gene_query + decoder_out
         gene_out = key_val + self.mlp1(gene_out)
 
         return gene_out, latent
@@ -173,8 +447,8 @@ class EncoderDeocder(nn.Module):
 class CrossAttn(nn.Module):
     def __init__(self, query_dim: int, key_val_dim: int, num_heads: int = 4, dropout: float = 0.0):
         super().__init__()
-        self.layernorm_kv = nn.LayerNorm(key_val_dim)
-        self.layernorm_q = nn.LayerNorm(query_dim)
+        self.layernorm_kv = nn.RMSNorm(key_val_dim)
+        self.layernorm_q = nn.RMSNorm(query_dim)
         print("CrossAttn drop", dropout)
         self.cross_attn = nn.MultiheadAttention(
             query_dim,
@@ -183,7 +457,7 @@ class CrossAttn(nn.Module):
             kdim=key_val_dim,
             vdim=key_val_dim,
             batch_first=True,
-        )
+        ) # MultiheadAttention performs the linear projections of Q, K, V internally
         self.mlp = MLP(query_dim, query_dim, dropout=dropout)
 
     def forward(
