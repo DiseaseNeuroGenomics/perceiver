@@ -79,6 +79,8 @@ class BaseTask(pl.LightningModule):
             self.network.parameters(),
             lr=self.task_cfg["learning_rate"],
             weight_decay=self.task_cfg["weight_decay"],
+            betas=self.task_cfg["ADAM_betas"],
+            eps=self.task_cfg["ADAM_eps"],
         )
 
     def optimizer_step(
@@ -752,7 +754,14 @@ class MSELoss(BaseTask):
 
 
         if self.task_cfg["loss"] == "MSE":
-            gene_loss = (target_mask * self.mse(gene_pred[:, :, 0], gene_targets)).mean()
+            idx_masked = torch.where(target_mask * key_padding_mask)
+            idx_unmasked = torch.where(target_mask * (1 - key_padding_mask))
+            gene_loss_masked = (self.mse(gene_pred[idx_masked], gene_targets[idx_masked].unsqueeze(-1))).mean()
+            gene_loss_unmasked = (self.mse(gene_pred[idx_unmasked], gene_targets[idx_unmasked].unsqueeze(-1))).mean()
+            self.log("gene_loss_masked", gene_loss_masked, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
+            self.log("gene_loss_unmasked", gene_loss_unmasked, on_step=False, on_epoch=True, prog_bar=True,
+                     sync_dist=True)
+            gene_loss = 2 * gene_loss_masked + gene_loss_unmasked
         elif self.task_cfg["loss"] == "ZINB":
             theta = self.network.output_theta(gene_target_ids)
             gene_loss = self.zinb(
